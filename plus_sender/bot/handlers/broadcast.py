@@ -101,12 +101,12 @@ async def _show_src_dialog_list(
     mode_label = "тривоги 🚨" if mode == "alert" else "відбою ✅"
     if query:
         header = (
-            f"📦  <b>Чат-джерело для {mode_label}</b>\n{HR}\n\n"
+            f"🎥  <b>Джерело кружків для {mode_label}</b>\n{HR}\n\n"
             f"Результати пошуку «{h(query)}»:\n"
         )
     else:
         header = (
-            f"📦  <b>Чат-джерело для {mode_label}</b>\n{HR}\n\n"
+            f"🎥  <b>Джерело кружків для {mode_label}</b>\n{HR}\n\n"
             f"Оберіть чат зі списку:\n"
         )
 
@@ -309,14 +309,14 @@ def _items_to_pretty(items: list[dict], selected: list[int]) -> str:
 
 
 def _type_label(type_str: Optional[str]) -> str:
-    return {"text": "✍️ текст", "forward": "📦 пересилати", "none": "🚫 вимкнено"}.get(
+    return {"text": "✍️ текст", "forward": "🎥 кружок з чату", "none": "🚫 вимкнено"}.get(
         type_str or "", "↩️ дефолт"
     )
 
 
 def _type_label_short(type_str: Optional[str]) -> str:
     """Без провідного emoji — для summary де ліворуч вже є 🚨/🟢."""
-    return {"text": "текст", "forward": "пересилати", "none": "вимкнено"}.get(
+    return {"text": "текст", "forward": "🎥 кружок", "none": "вимкнено"}.get(
         type_str or "", "дефолт"
     )
 
@@ -680,7 +680,7 @@ async def cb_textchat_start(call: types.CallbackQuery, state: FSMContext) -> Non
         f"⚙️  <b>{title}</b>\n{HR}\n\n"
         f"Натисніть на режим щоб обрати що надсилати:\n"
         f"<b>✍️ Текст</b> — введіть повідомлення вручну\n"
-        f"<b>📦 Переслати з чату</b> — Telethon пересилає медіа з вибраного чату без тегу «Переслано від»\n"
+        f"<b>🎥 Кружок з чату</b> — Telethon надішле відео-кружок з вибраного чату без тегу «Переслано від»\n"
         f"<b>🚫 Не надсилати</b> — цей чат пропускається",
         reply_markup=_build_chat_kb(data, pid),
     )
@@ -1066,7 +1066,7 @@ async def cb_tc_src_select(call: types.CallbackQuery, state: FSMContext) -> None
 
     src_pid = mapping.get(key)
     if src_pid is None:
-        await call.answer("Клавіатура застаріла. Відкрийте «📦 Переслати з чату» ще раз.", show_alert=True)
+        await call.answer("Клавіатура застаріла. Відкрийте «🎥 Кружок з чату» ще раз.", show_alert=True)
         return
 
     try:
@@ -1144,7 +1144,7 @@ async def target_forward_delay_input(msg: types.Message, state: FSMContext) -> N
     await msg.answer(
         f"✅  <b>Налаштування для {mode_label} збережено</b>\n"
         f"Чат-джерело: <b>{src_name}</b>   ⏱ <b>{delay} с</b>\n\n"
-        f"При {'тривозі' if mode == 'alert' else 'відбої'} Telethon пересилатиме медіа "
+        f"При {'тривозі' if mode == 'alert' else 'відбої'} Telethon надішле відео-кружок "
         f"з цього чату без тегу «Переслано від».",
         reply_markup=_build_chat_kb(data, pid),
     )

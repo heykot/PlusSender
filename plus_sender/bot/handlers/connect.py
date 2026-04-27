@@ -306,10 +306,8 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
         f"{step_indicator(3, 4)}\n"
         f"{DIV}\n"
         f"Telegram надіслав код у ваш акаунт. Введіть його сюди.\n\n"
-        f"<i>Формат не важливий — приймаю в будь-якому вигляді:</i>\n"
-        f"  <code>1 2 3 4 5</code>   <code>1-2-3-4-5</code>   <code>12345</code>\n\n"
-        f"{EMO['warn']}  <b>Не пересилайте код!</b>\n"
-        f"<i>Введіть його вручну, інакше Telegram заблокує авторизацію.</i>",
+        f"<i>Формат важливий — приймаю вигляді:</i>\n"
+        f"  <code>1 2 3 4 5</code>\n\n",
         reply_markup=cancel_kb(),
     )
 
@@ -347,7 +345,8 @@ async def step_code(msg: types.Message, state: FSMContext) -> None:
             f"{step_indicator(4, 4)}\n"
             f"{DIV}\n"
             f"На вашому акаунті ввімкнено 2FA.\n"
-            f"<i>Введіть cloud password:</i>",
+            f"<i>Введіть cloud password — точно як є, одним повідомленням.\n"
+            f"Повідомлення буде видалено одразу після отримання.</i>",
             reply_markup=cancel_kb(),
         )
         return
@@ -386,7 +385,13 @@ async def step_password(msg: types.Message, state: FSMContext) -> None:
         )
         return
 
-    password = (msg.text or "").strip()
+    password = msg.text or ""
+    # Видаляємо повідомлення з паролем одразу для безпеки
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
     if not password:
         await msg.answer(f"{EMO['err']} Пароль порожній. Введіть пароль 2FA:")
         return
@@ -406,7 +411,7 @@ async def _finish_success(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
 
     success_text = (
-        f"{EMO['ok']} <b>Сесію успішно створено!</b>\n{HR}\n"
+        f"{EMO['ok']} <b>Сесію успішно створено!</b>\n{DIV}\n"
         f"Тепер бот зможе надсилати повідомлення від вашого імені на тривогу/відбій у Києві.\n\n"
         f"📋 <b>Що далі:</b>\n"
         f"1️⃣  Натисніть «🎯 Налаштувати розсилку» — оберіть чати, тексти й затримки\n"
@@ -432,8 +437,7 @@ async def open_broadcast_after(call: types.CallbackQuery, state: FSMContext) -> 
     # делегуємо обробнику в broadcast.py — імпорт у функції, щоб уникнути цикл-імпорту
     from .broadcast import show_broadcast_settings
 
-    fake_msg = call.message
-    fake_msg.from_user = call.from_user  # type: ignore[attr-defined]
+    fake_msg = call.message.model_copy(update={"from_user": call.from_user})
     await show_broadcast_settings(fake_msg, state=state)
 
 
@@ -446,6 +450,5 @@ async def open_profile_after(call: types.CallbackQuery) -> None:
         pass
     from .profile import show_profile
 
-    fake_msg = call.message
-    fake_msg.from_user = call.from_user  # type: ignore[attr-defined]
+    fake_msg = call.message.model_copy(update={"from_user": call.from_user})
     await show_profile(fake_msg)

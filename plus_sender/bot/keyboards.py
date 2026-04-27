@@ -59,7 +59,7 @@ def text_input_kb() -> types.ReplyKeyboardMarkup:
 def payment_plans_kb() -> types.InlineKeyboardMarkup:
     """Клавіатура вибору тарифного плану (Stars)."""
     plans = [
-        (30,  250,  "30 днів — 250 ⭐"),
+        (30,  1,    "30 днів — 1 ⭐"),
         (90,  700,  "90 днів — 700 ⭐"),
         (180, 1350, "180 днів — 1350 ⭐"),
         (365, 2600, "365 днів — 2600 ⭐"),
@@ -151,7 +151,7 @@ def target_list_kb(
 
 # ===================== INLINE — налаштування конкретного чату =====================
 def _type_icon(type_str: Optional[str]) -> str:
-    return {"text": "✍️", "forward": "📦", "none": "🚫"}.get(type_str or "", "↩️")
+    return {"text": "✍️", "forward": "🎥", "none": "🚫"}.get(type_str or "", "↩️")
 
 
 def target_chat_kb(
@@ -206,7 +206,7 @@ def target_mode_type_kb(
         callback_data=f"bset:tc_type:{mode}:text",
     )])
 
-    fwd_label = f"{_check('forward')}📦 Переслати з чату"
+    fwd_label = f"{_check('forward')}🎥 Кружок з чату"
     if source_title and current_type == "forward":
         fwd_label += f"  ({truncate(source_title, 18)})"
     rows.append([types.InlineKeyboardButton(

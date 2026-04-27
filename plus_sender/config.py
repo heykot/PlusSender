@@ -34,6 +34,9 @@ class Settings:
     alarm_region_id: str
     alarm_poll_interval: int
     telegram_proxy: str   # "" = без проксі; "socks5://…" або "http://…"
+    mono_token: str       # Personal token з api.monobank.ua (опціонально)
+    mono_jar_id: str      # ID банки-скарбнички (опціонально)
+    mono_webhook_port: int  # Порт для aiohttp сервера (default 8080)
 
     @classmethod
     def load(cls) -> "Settings":
@@ -54,12 +57,20 @@ class Settings:
         except ValueError:
             interval = 10
 
+        try:
+            mono_port = int(_env("MONO_WEBHOOK_PORT", "8080"))
+        except ValueError:
+            mono_port = 8080
+
         return cls(
             bot_token=token,
             alarm_api_key=alarm_key,
             alarm_region_id=_env("ALARM_REGION_ID", "31"),  # 31 = Київ
             alarm_poll_interval=max(5, interval),
             telegram_proxy=_env("TELEGRAM_PROXY", ""),
+            mono_token=_env("MONO_TOKEN", ""),
+            mono_jar_id=_env("MONO_JAR_ID", ""),
+            mono_webhook_port=mono_port,
         )
 
 

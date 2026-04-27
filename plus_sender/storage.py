@@ -61,6 +61,16 @@ def update_user(user: types.User, **fields) -> dict:
     return data
 
 
+def refresh_user_meta(user: types.User) -> None:
+    """Оновлює user_id, username, first_name, last_name у профілі."""
+    data = load_user(user)
+    data["user_id"]    = user.id
+    data["username"]   = user.username or ""
+    data["first_name"] = user.first_name or ""
+    data["last_name"]  = user.last_name or ""
+    save_user(user, data)
+
+
 # ===================== Статус активності =====================
 def get_status(user: types.User) -> bool:
     return bool(load_user(user).get("status", False))

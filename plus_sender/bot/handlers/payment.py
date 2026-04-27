@@ -23,7 +23,7 @@ router = Router(name="payment")
 # ─────────────────────── Тарифи ───────────────────────
 # (days, stars, label)
 PLANS: list[tuple[int, int, str]] = [
-    (30,  250,  "30 днів"),
+    (30,  1,    "30 днів"),
     (90,  700,  "90 днів"),
     (180, 1350, "180 днів"),
     (365, 2600, "365 днів"),
@@ -33,13 +33,33 @@ PLANS: list[tuple[int, int, str]] = [
 # ─────────────────────── Відображення сторінки оплати ───────────────────────
 
 async def show_payment(msg: types.Message) -> None:
+    import os
     data = load_user(msg.from_user)
     access = data.get("access_until")
+    uid = msg.from_user.id
 
     plans_text = "\n".join(
         f"  • {label} — <b>{stars} ⭐</b>"
         for _, stars, label in PLANS
     )
+
+    # Monobank банка (показуємо тільки якщо налаштована)
+    mono_jar_send_id = (os.getenv("MONO_JAR_SEND_ID") or "").strip()
+    mono_block = ""
+    if mono_jar_send_id:
+        mono_plans = "\n".join([
+            "  • 30 днів — <b>50 грн</b>",
+            "  • 90 днів — <b>130 грн</b>",
+            "  • 180 днів — <b>250 грн</b>",
+            "  • 365 днів — <b>500 грн</b>",
+        ])
+        mono_block = (
+            f"\n\n💳 <b>Monobank (банка):</b>\n"
+            f"{mono_plans}\n\n"
+            f"У коментарі до платежу обов'язково вкажіть ваш ID:\n"
+            f"<code>{uid}</code>\n"
+            f"<a href='https://send.monobank.ua/{mono_jar_send_id}'>👉 Перейти до банки</a>"
+        )
 
     text = (
         f"{EMO['card']}  <b>Оплата доступу</b>\n"
@@ -47,10 +67,11 @@ async def show_payment(msg: types.Message) -> None:
         f"📅 Поточний доступ: <b>{access_status_line(access)}</b>\n\n"
         f"⭐ <b>Тарифи (Telegram Stars):</b>\n"
         f"{plans_text}\n\n"
-        f"Оплата відбувається прямо в Telegram — безпечно та миттєво.\n"
+        f"Оплата Stars відбувається прямо в Telegram — безпечно та миттєво.\n"
         f"Після успішної оплати доступ <b>продовжується автоматично</b>."
+        f"{mono_block}"
     )
-    await msg.answer(text, reply_markup=payment_plans_kb())
+    await msg.answer(text, reply_markup=payment_plans_kb(), disable_web_page_preview=True)
 
 
 # ─────────────────────── Вибір тарифу → invoice ───────────────────────

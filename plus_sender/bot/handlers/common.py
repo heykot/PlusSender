@@ -30,6 +30,7 @@ from ...storage import (
     get_targets,
     has_access,
     load_user,
+    refresh_user_meta,
     set_status,
 )
 from ...utils import (
@@ -49,6 +50,7 @@ router = Router(name="common")
 async def cmd_start(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
     user = msg.from_user
+    refresh_user_meta(user)
     data = load_user(user)
     active = bool(data.get("status", False))
     targets_count = len(get_targets(data))
@@ -143,6 +145,7 @@ async def turn_on(msg: types.Message, state: FSMContext) -> None:
             f"Перевірте розділ <b>💳 Оплата</b> або зверніться до адміністратора."
         )
         return
+    refresh_user_meta(msg.from_user)
     set_status(msg.from_user, True)
     await msg.answer(
         f"{EMO['active']}  <b>Режим увімкнено</b>\n"

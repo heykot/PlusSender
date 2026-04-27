@@ -46,6 +46,28 @@ async def _on_alarm_change(mode: str) -> None:
         log.exception("Помилка під час розсилки")
 
 
+async def _run_mono_server(bot, settings: Settings, log) -> None:
+    """Запускає aiohttp-сервер для Monobank webhook (якщо MONO_TOKEN задано)."""
+    if not settings.mono_token:
+        return
+
+    from aiohttp import web
+    from .mono_webhook import build_app, register_webhook
+
+    app = build_app(bot, settings.mono_jar_id)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", settings.mono_webhook_port)
+    await site.start()
+    log.info("🌐 Monobank webhook сервер запущено на порту %d", settings.mono_webhook_port)
+
+    # Автореєстрація webhook якщо задано MONO_WEBHOOK_URL
+    import os
+    webhook_url = (os.getenv("MONO_WEBHOOK_URL") or "").strip()
+    if webhook_url:
+        await register_webhook(settings.mono_token, webhook_url)
+
+
 async def main() -> None:
     _configure_logging()
     log = logging.getLogger("plus_sender")
@@ -80,6 +102,9 @@ async def main() -> None:
 
     monitor = AlarmMonitor(settings, on_change=_on_alarm_change)
     monitor.start()
+
+    # ── Monobank webhook сервер (якщо налаштовано) ──
+    await _run_mono_server(bot, settings, log)
 
     log.info("✅ Plus Sender 2.0 запущено")
     try:
