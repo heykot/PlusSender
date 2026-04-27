@@ -1,0 +1,9 @@
+.env
+sessions/
+user_data/
+admins.json
+venv/
+__pycache__/
+*.pyc
+*.session
+*.session-journal

@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plus Sender — Інструкція</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+  // Ініціалізація Telegram Mini App
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.Telegram && window.Telegram.WebApp) {
+      const tg = window.Telegram.WebApp;
+      tg.ready();
+      tg.expand();
+
+      // Кнопка «Закрити» у хедері
+      tg.BackButton.show();
+      tg.BackButton.onClick(function () { tg.close(); });
+
+      // Адаптуємо кольори під тему Telegram
+      const isDark = tg.colorScheme === 'dark';
+      if (!isDark) {
+        document.documentElement.style.setProperty('--bg', '#f0f2f5');
+        document.documentElement.style.setProperty('--surface', '#ffffff');
+        document.documentElement.style.setProperty('--border', '#e2e8f0');
+        document.documentElement.style.setProperty('--text', '#1a202c');
+        document.documentElement.style.setProperty('--muted', '#64748b');
+        document.documentElement.style.setProperty('--accent', '#2563eb');
+        document.documentElement.style.setProperty('--code-bg', '#f1f5f9');
+        document.documentElement.style.setProperty('--code-text', '#1d4ed8');
+      }
+    }
+  });
+</script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1e2433;
+    --border: #2d3748;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --code-bg: #0d1117;
+    --code-text: #7dd3fc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; transition: background 0.2s, color 0.2s; }
+  .container { max-width: 860px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  h1 { font-size: 2.2rem; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+  .subtitle { color: var(--muted); font-size: 1rem; margin-bottom: 40px; }
+
+  h2 { font-size: 1.3rem; font-weight: 700; color: var(--text); margin: 48px 0 16px; display: flex; align-items: center; gap: 10px; }
+  h2 .num { background: var(--accent); color: #fff; font-size: 0.8rem; font-weight: 700; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  h3 { font-weight: 600; color: var(--muted); margin: 20px 0 8px; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.78rem; }
+
+  p { color: var(--text); opacity: 0.85; margin-bottom: 12px; }
+  ul, ol { color: var(--text); opacity: 0.85; padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 6px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; }
+  .card-title { font-weight: 700; color: var(--text); margin-bottom: 8px; font-size: 0.95rem; }
+
+  code { background: var(--code-bg); color: var(--code-text); padding: 2px 7px; border-radius: 5px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.88em; border: 1px solid var(--border); }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; overflow-x: auto; margin: 12px 0 16px; }
+  pre code { background: none; border: none; padding: 0; color: var(--code-text); font-size: 0.9em; line-height: 1.6; }
+
+  .step { display: flex; gap: 16px; margin-bottom: 14px; align-items: flex-start; }
+  .step-num { background: var(--surface); color: var(--accent); font-weight: 700; font-size: 0.85rem; min-width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; margin-top: 2px; flex-shrink: 0; }
+  .step-body { flex: 1; }
+  .step-body strong { color: var(--text); }
+
+  .tip { background: #132d1e; border: 1px solid #166534; border-radius: 10px; padding: 14px 18px; margin: 12px 0; color: #86efac; font-size: 0.92rem; }
+  .warn { background: #2d1a0a; border: 1px solid #92400e; border-radius: 10px; padding: 14px 18px; margin: 12px 0; color: #fcd34d; font-size: 0.92rem; }
+  .info { background: #0f1f3d; border: 1px solid #1e3a5f; border-radius: 10px; padding: 14px 18px; margin: 12px 0; color: #93c5fd; font-size: 0.92rem; }
+
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 14px; font-size: 0.88rem; color: var(--text); }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 16px; font-size: 0.9rem; }
+  th { background: var(--surface); color: var(--muted); text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--surface); color: var(--text); opacity: 0.85; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+
+  .divider { border: none; border-top: 1px solid var(--surface); margin: 40px 0; }
+
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; margin-bottom: 40px; }
+  .toc-title { font-weight: 700; color: var(--text); margin-bottom: 12px; }
+  .toc a { color: var(--accent); text-decoration: none; font-size: 0.92rem; display: block; padding: 3px 0; }
+  .toc a:hover { opacity: 0.8; }
+  .toc-num { color: var(--border); margin-right: 6px; font-size: 0.8rem; }
+
+  .badge { display: inline-block; background: var(--surface); color: var(--accent); font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; margin-left: 8px; vertical-align: middle; border: 1px solid var(--border); }
+  .badge-green { background: #132d1e; color: #4ade80; }
+  .badge-yellow { background: #2d200a; color: #fbbf24; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>🚀 Plus Sender</h1>
+  <p class="subtitle">Повна інструкція з налаштування та використання бота авторозсилки при повітряній тривозі</p>
+
+  <div class="toc">
+    <div class="toc-title">📋 Зміст</div>
+    <a href="#s1"><span class="toc-num">1.</span> Що це і як працює</a>
+    <a href="#s2"><span class="toc-num">2.</span> Отримання API-ключів Telegram</a>
+    <a href="#s3"><span class="toc-num">3.</span> Перший запуск і старт бота</a>
+    <a href="#s4"><span class="toc-num">4.</span> Підключення Telethon-сесії</a>
+    <a href="#s5"><span class="toc-num">5.</span> Налаштування чатів для розсилки</a>
+    <a href="#s6"><span class="toc-num">6.</span> Налаштування повідомлень по кожному чату</a>
+    <a href="#s7"><span class="toc-num">7.</span> Розклад роботи</a>
+    <a href="#s8"><span class="toc-num">8.</span> Старт і зупинка розсилки</a>
+    <a href="#s9"><span class="toc-num">9.</span> Перегляд профілю</a>
+    <a href="#s10"><span class="toc-num">10.</span> Оплата доступу (Telegram Stars)</a>
+  </div>
+
+  <!-- ───────────────────── 1 ───────────────────── -->
+  <h2 id="s1"><span class="num">1</span> Що це і як працює</h2>
+
+  <p><strong>Plus Sender</strong> — бот, який стежить за API повітряної тривоги (ukrainealarm.com) і автоматично надсилає повідомлення з вашого Telegram-акаунту у вибрані чати, коли тривога <em>починається</em> або <em>закінчується</em>.</p>
+
+  <div class="card">
+    <div class="card-title">⚡ Схема роботи</div>
+    <div class="step"><div class="step-num">1</div><div class="step-body">Бот кожні 10 с опитує ukrainealarm API — стежить за статусом тривоги у вибраному регіоні</div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body">Щойно статус змінився — бот запускає розсилку через <strong>вашу Telethon-сесію</strong> (не через бота, а від вашого акаунту)</div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body">У кожен вибраний чат надсилається текст або відео-кружок з вашого чату-джерела — із заданою затримкою</div></div>
+  </div>
+
+  <div class="info">ℹ️ Повідомлення надсилаються <strong>від вашого акаунту</strong>, а не від імені бота. Для цього потрібна Telethon-сесія (кроки 2–4).</div>
+
+  <!-- ───────────────────── 2 ───────────────────── -->
+  <h2 id="s2"><span class="num">2</span> Отримання API-ключів Telegram</h2>
+
+  <p>Для роботи Telethon потрібні <code>api_id</code> та <code>api_hash</code> вашого Telegram-акаунту. Це безкоштовно.</p>
+
+  <div class="step"><div class="step-num">1</div><div class="step-body">Перейдіть на <strong>my.telegram.org</strong> і увійдіть зі своїм номером телефону</div></div>
+  <div class="step"><div class="step-num">2</div><div class="step-body">Натисніть <strong>«API development tools»</strong></div></div>
+  <div class="step"><div class="step-num">3</div><div class="step-body">Заповніть форму (назва і платформа — будь-які) → натисніть <strong>«Create application»</strong></div></div>
+  <div class="step"><div class="step-num">4</div><div class="step-body">Скопіюйте <code>App api_id</code> і <code>App api_hash</code> — вони знадобляться на кроці 4</div></div>
+
+  <div class="warn">⚠️ Не передавайте api_id та api_hash нікому. Хто має їх разом з сесією — може читати ваш Telegram.</div>
+
+  <!-- ───────────────────── 3 ───────────────────── -->
+  <h2 id="s3"><span class="num">3</span> Перший запуск і старт бота</h2>
+
+  <p>Відкрийте бота в Telegram і надішліть <code>/start</code>. Ви побачите головне меню з кнопками:</p>
+
+  <div class="btn-row">
+    <span class="btn">🎛 Налаштування</span>
+    <span class="btn">▶️ Старт</span>
+    <span class="btn">⏹ Стоп</span>
+    <span class="btn">🔌 Підключити</span>
+    <span class="btn">👤 Профіль</span>
+    <span class="btn">💳 Оплата</span>
+    <span class="btn">ℹ️ Довідка</span>
+  </div>
+
+  <div class="info">ℹ️ Перед використанням потрібно: <strong>оплатити доступ → підключити сесію → налаштувати чати → натиснути Старт.</strong></div>
+
+  <!-- ───────────────────── 4 ───────────────────── -->
+  <h2 id="s4"><span class="num">4</span> Підключення Telethon-сесії</h2>
+
+  <p>Натисніть кнопку <strong>🔌 Підключити</strong> (або команду <code>/connect</code>). Майстер складається з 4 кроків:</p>
+
+  <div class="card">
+    <div class="step"><div class="step-num">1</div><div class="step-body"><strong>API-ключі</strong> — введіть <code>api_id</code> і <code>api_hash</code> через пробіл або двокрапку:<br><code>12345678 a1b2c3d4e5f6...</code></div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Номер телефону</strong> — введіть у форматі <code>+380XXXXXXXXX</code></div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Код підтвердження</strong> — прийде в Telegram (можна вводити з пробілами: <code>1 2 3 4 5</code>)</div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Пароль 2FA</strong> — якщо увімкнена двофакторна авторизація (інакше крок пропускається)</div></div>
+  </div>
+
+  <div class="tip">✅ Після успіху бот запропонує одразу перейти до налаштувань. Сесія зберігається на сервері — наступного разу підключення не потрібне.</div>
+  <div class="warn">⚠️ Якщо вже є збережена сесія — бот запитає: лишити стару чи замінити новою.</div>
+
+  <!-- ───────────────────── 5 ───────────────────── -->
+  <h2 id="s5"><span class="num">5</span> Налаштування чатів для розсилки</h2>
+
+  <p>Натисніть <strong>🎛 Налаштування</strong>. Відкриється список останніх діалогів — оберіть чати, у які надсилати повідомлення.</p>
+
+  <div class="card">
+    <div class="card-title">Як обрати чати</div>
+    <div class="step"><div class="step-num">1</div><div class="step-body">Натисніть чат зі списку — <strong>⬜ → ✅</strong> (вибрано) або натисніть ще раз для скасування</div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body">Не знайшли потрібний чат? Натисніть <strong>🔍 Пошук чату</strong> і введіть назву або @username</div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body">Коли обрали всі чати — натисніть <strong>✅ Зберегти та закрити</strong></div></div>
+  </div>
+
+  <div class="tip">✅ Можна обрати будь-яку кількість чатів — особисті, групи, канали.</div>
+
+  <!-- ───────────────────── 6 ───────────────────── -->
+  <h2 id="s6"><span class="num">6</span> Налаштування повідомлень по кожному чату</h2>
+
+  <p>У меню Налаштувань натисніть <strong>⚙️ Налаштування кожного чату</strong>. Оберіть чат зі списку — відкриється його конфіг.</p>
+
+  <p>Для кожного чату окремо налаштовується реакція на <strong>🚨 Тривогу</strong> і <strong>🟢 Відбій</strong>. Для кожного з них три варіанти:</p>
+
+  <table>
+    <thead><tr><th>Варіант</th><th>Що відбувається</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>✍️ Текст / медіа</td>
+        <td>Надсилається заданий текст або завантажений медіафайл. Натисніть кнопку, введіть текст або надішліть файл.</td>
+      </tr>
+      <tr>
+        <td>📦 Пересилати з чату</td>
+        <td>Бот бере відео-кружок (або будь-яке медіа) з вказаного чату-джерела і пересилає БЕЗ мітки «Forwarded from». Відображається кількість доступних кружків.</td>
+      </tr>
+      <tr>
+        <td>🚫 Вимкнено</td>
+        <td>Для цієї події в цей чат нічого не надсилається.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Як налаштувати «Пересилати з чату»</h3>
+  <div class="step"><div class="step-num">1</div><div class="step-body">Натисніть кнопку <strong>📦 Пересилати</strong> поруч із потрібною подією</div></div>
+  <div class="step"><div class="step-num">2</div><div class="step-body">Відкриється список ваших діалогів — оберіть чат-джерело (звідки брати медіа)</div></div>
+  <div class="step"><div class="step-num">3</div><div class="step-body">Бот показує скільки кружків бачить у цьому чаті (до 200 повідомлень). При кожній тривозі надсилається наступний по черзі.</div></div>
+
+  <h3>Затримка надсилання</h3>
+  <p>Для кожного чату і кожної події можна задати затримку в секундах — скільки чекати після початку тривоги перед надсиланням. Натисніть кнопку <strong>⏱ Xс</strong> і введіть число.</p>
+
+  <div class="tip">✅ Щоб перевірити поточний стан — натисніть <strong>📊 Поточний стан</strong> в меню Налаштувань. Буде показано всі чати, типи і кількість кружків.</div>
+
+  <!-- ───────────────────── 7 ───────────────────── -->
+  <h2 id="s7"><span class="num">7</span> Розклад роботи</h2>
+
+  <p>У меню Налаштувань натисніть <strong>⏰ Розклад роботи</strong>. Можна задати проміжок часу, коли розсилка <strong>активна</strong>. Поза цим часом — бот мовчить.</p>
+
+  <div class="card">
+    <div class="card-title">Приклади</div>
+    <div class="step"><div class="step-num">→</div><div class="step-body"><code>08:00 – 22:00</code> — вдень активно, вночі мовчить</div></div>
+    <div class="step"><div class="step-num">→</div><div class="step-body"><code>22:00 – 06:00</code> — нічний режим (бот підтримує діапазони через північ)</div></div>
+    <div class="step"><div class="step-num">→</div><div class="step-body">Розклад вимкнено — бот завжди активний</div></div>
+  </div>
+
+  <p>Для встановлення: натисніть <strong>✏️ Змінити</strong> → введіть час початку (HH:MM) → введіть час кінця (HH:MM).</p>
+
+  <!-- ───────────────────── 8 ───────────────────── -->
+  <h2 id="s8"><span class="num">8</span> Старт і зупинка розсилки</h2>
+
+  <p>Коли все налаштовано — натисніть <strong>▶️ Старт</strong>. Бот починає стежити за тривогою і надсилати повідомлення.</p>
+
+  <div class="card">
+    <div class="card-title">Вимоги для старту</div>
+    <ul>
+      <li>✅ Активний доступ (оплачений)</li>
+      <li>✅ Підключена Telethon-сесія</li>
+      <li>✅ Обраний хоча б один чат</li>
+    </ul>
+  </div>
+
+  <p>Щоб зупинити — натисніть <strong>⏹ Стоп</strong>. Налаштування зберігаються, в будь-який момент можна увімкнути знову.</p>
+
+  <div class="info">ℹ️ Поточний стан відображається у кнопці <code>📊 Стан: Активно / Не активно</code> в головному меню.</div>
+
+  <!-- ───────────────────── 9 ───────────────────── -->
+  <h2 id="s9"><span class="num">9</span> Перегляд профілю</h2>
+
+  <p>Натисніть <strong>👤 Профіль</strong> — відкриється картка з усією інформацією:</p>
+
+  <table>
+    <thead><tr><th>Секція</th><th>Що показує</th></tr></thead>
+    <tbody>
+      <tr><td>Акаунт</td><td>Username, ID, режим (активний/ні), термін доступу</td></tr>
+      <tr><td>Сесія Telethon</td><td>Чи є сесія, дата останнього підключення, api_id/api_hash</td></tr>
+      <tr><td>Розсилка</td><td>Кількість чатів, розбивка по типах (📦/✍️/↩️)</td></tr>
+      <tr><td>Тексти по чатах</td><td>Детально по кожному чату з кількістю доступних кружків</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Розклад у профілі</h3>
+  <p>Поточний розклад роботи відображається у секції <strong>Розсилка</strong>. Якщо розклад активний — видно проміжок часу, наприклад <code>08:00 – 22:00</code>. Якщо вимкнений — позначається як «без обмежень». Змінити розклад можна через <strong>🎛 Налаштування → ⏰ Розклад роботи</strong>.</p>
+
+  <!-- ───────────────────── 10 ───────────────────── -->
+  <h2 id="s10"><span class="num">10</span> Оплата доступу (Telegram Stars)</h2>
+
+  <p>Натисніть <strong>💳 Оплата</strong>. Доступні тарифи:</p>
+
+  <table>
+    <thead><tr><th>Тариф</th><th>Зірки</th><th>Ціна/день</th><th>Знижка</th></tr></thead>
+    <tbody>
+      <tr><td>30 днів</td><td>250 ⭐</td><td>8.3/день</td><td>—</td></tr>
+      <tr><td>90 днів</td><td>700 ⭐</td><td>7.8/день</td><td>-6%</td></tr>
+      <tr><td>180 днів</td><td>1 350 ⭐</td><td>7.5/день</td><td>-10%</td></tr>
+      <tr><td>365 днів</td><td>2 600 ⭐</td><td>7.1/день</td><td>-15%</td></tr>
+    </tbody>
+  </table>
+
+  <div class="step"><div class="step-num">1</div><div class="step-body">Натисніть кнопку потрібного тарифу</div></div>
+  <div class="step"><div class="step-num">2</div><div class="step-body">Telegram відкриє стандартний екран оплати зірками — підтвердіть</div></div>
+  <div class="step"><div class="step-num">3</div><div class="step-body">Після оплати доступ продовжується автоматично, бот надсилає підтвердження</div></div>
+
+  <div class="info">ℹ️ Telegram Stars — вбудована валюта Telegram. Купити їх можна прямо в додатку (App Store / Google Play) або на Fragment.io. Оплата безпечна і миттєва.</div>
+  <div class="tip">✅ Якщо у вас вже є активний доступ — нові дні додаються зверху (не перезаписуються).</div>
+
+  <hr class="divider">
+  <p style="color:#475569; font-size:0.85rem; text-align:center;">Plus Sender 2.0 · Документ сформовано автоматично</p>
+
+</div>
+</body>
+</html>
