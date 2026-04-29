@@ -55,30 +55,6 @@ def text_input_kb() -> types.ReplyKeyboardMarkup:
     )
 
 
-# ===================== INLINE — тарифи оплати (Telegram Stars) =====================
-def payment_plans_kb() -> types.InlineKeyboardMarkup:
-    """Клавіатура вибору тарифного плану (Stars)."""
-    plans = [
-        (30,  1,    "30 днів — 1 ⭐"),
-        (90,  700,  "90 днів — 700 ⭐"),
-        (180, 1350, "180 днів — 1350 ⭐"),
-        (365, 2600, "365 днів — 2600 ⭐"),
-    ]
-    rows = []
-    row: list[types.InlineKeyboardButton] = []
-    for days, stars, label in plans:
-        row.append(types.InlineKeyboardButton(
-            text=label,
-            callback_data=f"pay:buy:{days}:{stars}",
-        ))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    return types.InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 # ===================== INLINE — вибір чатів для розсилки =====================
 def broadcast_settings_kb(
     items: list[dict],
