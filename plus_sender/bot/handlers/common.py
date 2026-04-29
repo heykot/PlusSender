@@ -19,6 +19,7 @@ from ...config import (
     BTN_PROFILE,
     BTN_START,
     BTN_STOP,
+    BTN_SUPPORT,
     CANCEL_TEXTS,
     DIV,
     EMO,
@@ -214,3 +215,10 @@ async def menu_payment(msg: types.Message, state: FSMContext) -> None:
     await _interrupt(msg, state)
     from .payment import show_payment
     await show_payment(msg)
+
+
+@router.message(F.text == BTN_SUPPORT)
+async def menu_support(msg: types.Message, state: FSMContext) -> None:
+    await _interrupt(msg, state)
+    from .support import open_support
+    await open_support(msg, state)

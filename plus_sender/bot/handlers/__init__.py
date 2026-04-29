@@ -1,7 +1,7 @@
 """Реєстрація всіх handler-роутерів."""
 from aiogram import Dispatcher
 
-from . import admin, broadcast, common, connect, payment, profile, source_chat
+from . import admin, broadcast, common, connect, payment, profile, source_chat, support
 
 
 def register(dp: Dispatcher) -> None:
@@ -13,5 +13,6 @@ def register(dp: Dispatcher) -> None:
     dp.include_router(broadcast.router)
     dp.include_router(profile.router)
     dp.include_router(payment.router)
+    dp.include_router(support.router)
     dp.include_router(admin.router)
     dp.include_router(source_chat.router)

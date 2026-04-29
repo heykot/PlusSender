@@ -144,6 +144,7 @@ BTN_HELP = "ℹ️ Довідка"
 BTN_STATUS_PREFIX = "📊 Стан:"
 
 # Скасування / disable надсилання
+BTN_SUPPORT = "🆘 Підтримка"
 BTN_CANCEL = "↩️ Скасувати"
 BTN_DISABLE_TEXT = "🚫 Не надсилати"
 

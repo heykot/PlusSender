@@ -16,6 +16,7 @@ from ..config import (
     BTN_START,
     BTN_STATUS_PREFIX,
     BTN_STOP,
+    BTN_SUPPORT,
 )
 from ..storage import get_status
 from ..utils import status_label, truncate
@@ -30,7 +31,8 @@ def main_menu_kb(user: types.User) -> types.ReplyKeyboardMarkup:
             [types.KeyboardButton(text=BTN_BROADCAST)],
             [types.KeyboardButton(text=BTN_START), types.KeyboardButton(text=BTN_STOP)],
             [types.KeyboardButton(text=BTN_CONNECT), types.KeyboardButton(text=BTN_PROFILE)],
-            [types.KeyboardButton(text=BTN_PAYMENT), types.KeyboardButton(text=BTN_HELP)],
+            [types.KeyboardButton(text=BTN_PAYMENT), types.KeyboardButton(text=BTN_SUPPORT)],
+            [types.KeyboardButton(text=BTN_HELP)],
             [types.KeyboardButton(text=status_btn)],
         ],
         resize_keyboard=True,

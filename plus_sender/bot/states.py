@@ -27,6 +27,10 @@ class BroadcastStates(StatesGroup):
     waiting_target_forward_delay = State() # FSM: target_pid, target_mode (source вже збережено)
 
 
+class SupportStates(StatesGroup):
+    waiting_message = State()   # юзер пише повідомлення в підтримку
+
+
 class AdminStates(StatesGroup):
     waiting_broadcast_text = State()
     waiting_access_days = State()
