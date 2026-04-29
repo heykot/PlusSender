@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -16,17 +18,49 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from .alarm import AlarmMonitor
 from .bot.handlers import register as register_handlers
-from .config import Settings, ensure_runtime_dirs
+from .config import PROJECT_ROOT, Settings, ensure_runtime_dirs
 from .sender import broadcast_for_all_users
+
+LOGS_DIR = PROJECT_ROOT / "logs"
 
 
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
     )
+
+    # ── Консоль ──
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(fmt)
+
+    # ── Файл: всі INFO+ (ротація 5 МБ, зберігаємо 7 файлів) ──
+    file_all = RotatingFileHandler(
+        LOGS_DIR / "bot.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=7,
+        encoding="utf-8",
+    )
+    file_all.setFormatter(fmt)
+
+    # ── Файл: тільки ERROR+ (окремий для швидкого пошуку проблем) ──
+    file_err = RotatingFileHandler(
+        LOGS_DIR / "errors.log",
+        maxBytes=2 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_err.setLevel(logging.ERROR)
+    file_err.setFormatter(fmt)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(console)
+    root.addHandler(file_all)
+    root.addHandler(file_err)
+
     # Trim noisy libs
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     logging.getLogger("telethon").setLevel(logging.WARNING)

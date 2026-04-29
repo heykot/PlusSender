@@ -3,6 +3,7 @@ sessions/
 user_data/
 admins.json
 venv/
+logs/
 __pycache__/
 *.pyc
 *.session
