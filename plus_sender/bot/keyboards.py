@@ -204,6 +204,25 @@ def target_mode_type_kb(
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# ===================== INLINE — режим надсилання кружків =====================
+def forward_mode_kb(mode: str, current_fwd_mode: str = "roundrobin") -> types.InlineKeyboardMarkup:
+    """🔄 По колу / 🗑 Відправив → видалив."""
+    def _check(m: str) -> str:
+        return "✅ " if current_fwd_mode == m else ""
+
+    return types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(
+            text=f"{_check('roundrobin')}🔄 По колу",
+            callback_data=f"bset:tc_fwd_mode:{mode}:roundrobin",
+        )],
+        [types.InlineKeyboardButton(
+            text=f"{_check('delete')}🗑 Відправив → видалив",
+            callback_data=f"bset:tc_fwd_mode:{mode}:delete",
+        )],
+        [types.InlineKeyboardButton(text="↩️ Назад", callback_data="bset:tc_modeback")],
+    ])
+
+
 # ===================== INLINE — розклад роботи =====================
 def schedule_kb(enabled: bool, from_time: str, to_time: str) -> types.InlineKeyboardMarkup:
     rows: list[list[types.InlineKeyboardButton]] = []

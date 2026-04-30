@@ -624,6 +624,22 @@ def set_target_forward_source(data: dict, pid: int, mode: str, chat_id: int, tit
     set_target_messages(data, tms)
 
 
+def get_target_forward_mode(data: dict, pid: int, mode: str) -> str:
+    """Повертає режим відправки кружків: 'roundrobin' або 'delete'. Default: 'roundrobin'."""
+    item = get_target_messages(data).get(pid) or {}
+    return str(item.get(f"{mode}_forward_mode") or "roundrobin")
+
+
+def set_target_forward_mode(data: dict, pid: int, mode: str, fwd_mode: str) -> None:
+    """Встановлює режим відправки кружків: 'roundrobin' або 'delete'."""
+    tms = get_target_messages(data)
+    item = dict(tms.get(pid) or {})
+    item[f"{mode}_forward_mode"] = fwd_mode
+    item.pop(f"{mode}_forward_used", None)  # скидаємо лічильник при зміні режиму
+    tms[pid] = item
+    set_target_messages(data, tms)
+
+
 def clear_target_forward_source(data: dict, pid: int, mode: str) -> None:
     tms = get_target_messages(data)
     item = dict(tms.get(pid) or {})
@@ -648,7 +664,7 @@ def get_target_forward_used(data: dict, pid: int, mode: str) -> list[int]:
 
 
 def mark_target_forward_used(data: dict, pid: int, mode: str, msg_id: int, total: int) -> None:
-    """Round-robin: скидає список коли всі повідомлення переглянуто."""
+    """Зберігає ID відправленого кружка. Скидає список коли всі відправлено."""
     tms = get_target_messages(data)
     item = dict(tms.get(pid) or {})
     raw = item.get(f"{mode}_forward_used")
@@ -660,7 +676,8 @@ def mark_target_forward_used(data: dict, pid: int, mode: str, msg_id: int, total
             used = []
     if msg_id not in used:
         used.append(msg_id)
-    if len(used) >= total:
+    # Скидаємо тільки коли відправили всі доступні кружки
+    if total > 0 and len(used) >= total:
         used = []
     item[f"{mode}_forward_used"] = used
     tms[pid] = item

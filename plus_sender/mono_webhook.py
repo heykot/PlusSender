@@ -16,19 +16,55 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 from aiohttp import web
 
+from .config import PROJECT_ROOT
+
 log = logging.getLogger(__name__)
+
+# ── Окремий лог платежів ──────────────────────────────────────────────────────
+_pay_log = logging.getLogger("plus_sender.payments")
+
+
+def _setup_payment_log() -> None:
+    if _pay_log.handlers:
+        return
+    logs_dir = PROJECT_ROOT / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    fh = RotatingFileHandler(
+        logs_dir / "payments.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=10,
+        encoding="utf-8",
+    )
+    fh.setFormatter(logging.Formatter(
+        fmt="%(asctime)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    _pay_log.addHandler(fh)
+    _pay_log.propagate = True
+
+
+_setup_payment_log()
+
+
+def _log_payment(status: str, **kwargs) -> None:
+    parts = [f"[{status}]"]
+    for k, v in kwargs.items():
+        parts.append(f"{k}={v}")
+    _pay_log.info("  ".join(parts))
 
 # ─── Тарифна сітка: (мін. сума UAH, кількість днів) ───────────────────────
 # Сортуємо від більшого до меншого — беремо перший що підходить
 PLANS_UAH: list[tuple[int, int]] = [
-    (500, 365),
-    (250, 180),
-    (130, 90),
-    (50,  30),
+    (2800, 365),
+    (1500, 180),
+    (800,  90),
+    (300,  30),
+    (25,   30),
 ]
 
 
@@ -92,20 +128,17 @@ async def mono_webhook_handler(request: web.Request) -> web.Response:
     tg_uid = _tg_id_from_comment(comment) or _tg_id_from_comment(description)
 
     if tg_uid is None:
-        log.info(
-            "mono_webhook: платіж %.2f грн без Telegram ID (comment=%r)",
-            amount / 100, comment,
-        )
-        # Сповіщаємо адмінів про платіж без ID
+        uah_str = f"{amount / 100:.0f}"
+        _log_payment("NO_ID", amount_uah=uah_str, comment=repr(comment))
+        log.info("mono_webhook: платіж %s грн без Telegram ID (comment=%r)", uah_str, comment)
         await _notify_admins_unknown(bot, amount, comment)
         return web.Response(status=200)
 
     days = _amount_to_days(amount)
+    uah_str = f"{amount / 100:.0f}"
     if days == 0:
-        log.info(
-            "mono_webhook: сума %.2f грн не відповідає жодному тарифу (uid=%d)",
-            amount / 100, tg_uid,
-        )
+        _log_payment("LOW_AMOUNT", uid=tg_uid, amount_uah=uah_str, comment=repr(comment))
+        log.info("mono_webhook: сума %s грн не відповідає жодному тарифу (uid=%d)", uah_str, tg_uid)
         return web.Response(status=200)
 
     # ── Видаємо доступ ──
@@ -114,11 +147,16 @@ async def mono_webhook_handler(request: web.Request) -> web.Response:
     if new_until is None:
         new_until = grant_access_days(tg_uid, days) or "невідомо"
 
-    uah_str = f"{amount / 100:.0f}"
-    log.info(
-        "✅ Mono payment: uid=%d  amount=%s грн  days=%d → access_until=%s",
-        tg_uid, uah_str, days, new_until,
+    _log_payment(
+        "SUCCESS",
+        uid=tg_uid,
+        amount_uah=uah_str,
+        days=days,
+        access_until=new_until,
+        comment=repr(comment),
     )
+    log.info("✅ Mono payment: uid=%d  amount=%s грн  days=%d → access_until=%s",
+             tg_uid, uah_str, days, new_until)
 
     # ── Повідомляємо користувача ──
     label = _days_label(days)
@@ -134,6 +172,7 @@ async def mono_webhook_handler(request: web.Request) -> web.Response:
             parse_mode="HTML",
         )
     except Exception as exc:
+        _log_payment("NOTIFY_FAIL", uid=tg_uid, error=str(exc))
         log.warning("mono_webhook: не вдалося написати uid=%d: %s", tg_uid, exc)
 
     # ── Сповіщаємо адмінів ──

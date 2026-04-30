@@ -21,6 +21,7 @@ from .config import SESSIONS_DIR, USERS_DIR
 from .storage import (
     delay_for_target,
     get_default_media,
+    get_target_forward_mode,
     get_target_forward_source,
     get_target_forward_used,
     get_target_media,
@@ -66,10 +67,21 @@ async def _send_media_no_fwd(client: TelegramClient, entity, msg) -> None:
 
 # ─────────────────────── Отримання повідомлень з чату-джерела ───────────────────────
 
+def _is_video_note_msg(msg) -> bool:
+    """Перевіряє чи повідомлення є відео-кружком."""
+    from telethon.tl.types import DocumentAttributeVideo
+    doc = getattr(getattr(msg, "media", None), "document", None)
+    if not doc:
+        return False
+    for attr in getattr(doc, "attributes", []):
+        if isinstance(attr, DocumentAttributeVideo) and getattr(attr, "round_message", False):
+            return True
+    return False
+
+
 async def _fetch_source_msgs(client: TelegramClient, chat_id: int) -> list:
-    """Повертає список Telethon-повідомлень з медіа з вказаного чату."""
+    """Повертає список відео-кружків з вказаного чату (відсортованих за msg_id)."""
     try:
-        # Пробуємо отримати entity через PeerXxx → fallback get_entity
         try:
             real_id, peer_cls = tl_utils.resolve_id(chat_id)
             src_entity = await client.get_input_entity(peer_cls(real_id))
@@ -80,10 +92,13 @@ async def _fetch_source_msgs(client: TelegramClient, chat_id: int) -> list:
         total = 0
         async for sm in client.iter_messages(src_entity, limit=200):
             total += 1
-            if sm.media:
+            if _is_video_note_msg(sm):
                 msgs.append(sm)
 
-        log.info("src-fetch chat_id=%d: всього=%d  з медіа=%d", chat_id, total, len(msgs))
+        # Сортуємо за ID щоб порядок був детермінованим після рестарту
+        msgs.sort(key=lambda m: m.id)
+
+        log.info("src-fetch chat_id=%d: всього=%d  кружків=%d", chat_id, total, len(msgs))
         return msgs
     except Exception as exc:
         log.warning("src-fetch chat_id=%d ПОМИЛКА: %s", chat_id, exc)
@@ -91,12 +106,17 @@ async def _fetch_source_msgs(client: TelegramClient, chat_id: int) -> list:
 
 
 def _pick_round_robin(msgs: list, used_ids: list[int]) -> Optional[object]:
-    """Вибирає повідомлення round-robin, пропускаючи вже використані."""
+    """Вибирає наступний невідправлений кружок по черзі (sequential, не random).
+
+    Список відсортований за msg_id — тому після рестарту порядок однаковий.
+    Якщо всі відправлено — починає нове коло з найменшого ID.
+    """
     used_set = set(used_ids)
     avail = [m for m in msgs if m.id not in used_set]
     if not avail:
-        avail = msgs  # всі переглянуті — починаємо нове коло
-    return random.choice(avail) if avail else None
+        # Всі відправлено — починаємо нове коло
+        avail = msgs
+    return avail[0] if avail else None
 
 
 # ─────────────────────── Основна логіка розсилки ───────────────────────
@@ -207,23 +227,45 @@ async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional
                     src = get_target_forward_source(data, pid, mode)
                     if src:
                         src_chat_id = int(src["chat_id"])
-                        if src_chat_id not in source_cache:
-                            source_cache[src_chat_id] = await _fetch_source_msgs(client, src_chat_id)
-                        msgs = source_cache[src_chat_id]
-                        if msgs:
-                            used = get_target_forward_used(data, pid, mode)
-                            chosen = _pick_round_robin(msgs, used)
-                            if chosen:
+                        fwd_mode = get_target_forward_mode(data, pid, mode)
+
+                        if fwd_mode == "delete":
+                            # ── Режим "відправив → видалив" ──
+                            # Завжди завантажуємо свіжий список (не кешуємо)
+                            fresh_msgs = await _fetch_source_msgs(client, src_chat_id)
+                            if fresh_msgs:
+                                chosen = fresh_msgs[0]  # перший доступний
                                 await _send_media_no_fwd(client, entity, chosen)
-                                mark_target_forward_used(data, pid, mode, chosen.id, len(msgs))
-                                save_user_json(json_path, data)
-                                log.info("[%s] fwd-noheader → pid=%d  src=%s  msg_id=%d",
-                                         username_base, pid, src.get("title", src_chat_id), chosen.id)
+                                # Видаляємо з джерела
+                                try:
+                                    await client.delete_messages(src_chat_id, [chosen.id])
+                                    log.info("[%s] fwd-delete → pid=%d  src=%s  msg_id=%d видалено",
+                                             username_base, pid, src.get("title", src_chat_id), chosen.id)
+                                except Exception as del_exc:
+                                    log.warning("[%s] fwd-delete: не вдалося видалити msg_id=%d: %s",
+                                                username_base, chosen.id, del_exc)
                                 sent += 1
                             else:
-                                failures.append(f"{pid}:no_media_in_src")
+                                failures.append(f"{pid}:src_empty")
                         else:
-                            failures.append(f"{pid}:src_empty")
+                            # ── Режим "по колу" (round-robin) ──
+                            if src_chat_id not in source_cache:
+                                source_cache[src_chat_id] = await _fetch_source_msgs(client, src_chat_id)
+                            msgs = source_cache[src_chat_id]
+                            if msgs:
+                                used = get_target_forward_used(data, pid, mode)
+                                chosen = _pick_round_robin(msgs, used)
+                                if chosen:
+                                    await _send_media_no_fwd(client, entity, chosen)
+                                    mark_target_forward_used(data, pid, mode, chosen.id, len(msgs))
+                                    save_user_json(json_path, data)
+                                    log.info("[%s] fwd-roundrobin → pid=%d  src=%s  msg_id=%d",
+                                             username_base, pid, src.get("title", src_chat_id), chosen.id)
+                                    sent += 1
+                                else:
+                                    failures.append(f"{pid}:no_media_in_src")
+                            else:
+                                failures.append(f"{pid}:src_empty")
                     else:
                         failures.append(f"{pid}:no_src")
 

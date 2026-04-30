@@ -24,7 +24,8 @@ class BroadcastStates(StatesGroup):
 
     # Per-target: вибір чату-джерела через список діалогів Telethon
     waiting_target_src_search = State()    # FSM: target_pid, target_mode — юзер вводить пошук
-    waiting_target_forward_delay = State() # FSM: target_pid, target_mode (source вже збережено)
+    waiting_forward_mode = State()         # FSM: target_pid, target_mode (source вже збережено, обирається режим)
+    waiting_target_forward_delay = State() # FSM: target_pid, target_mode (source + mode вже збережено)
 
 
 class SupportStates(StatesGroup):

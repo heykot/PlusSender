@@ -24,6 +24,7 @@ from ...storage import (
     clear_target_media,
     delay_for_target,
     get_schedule,
+    get_target_forward_mode,
     get_target_forward_source,
     get_target_messages,
     get_target_type,
@@ -34,6 +35,7 @@ from ...storage import (
     save_user,
     session_path,
     set_schedule,
+    set_target_forward_mode,
     set_target_forward_source,
     set_target_messages,
     set_target_type,
@@ -51,6 +53,7 @@ from ...utils import (
 from ..keyboards import (
     broadcast_settings_kb,
     cancel_kb,
+    forward_mode_kb,
     main_menu_kb,
     schedule_kb,
     source_chat_select_kb,
@@ -1083,9 +1086,9 @@ async def cb_tc_src_select(call: types.CallbackQuery, state: FSMContext) -> None
     save_user(call.from_user, data)
 
     mode_label = "тривоги 🚨" if mode == "alert" else "відбою ✅"
-    cur_delay = delay_for_target(data, pid, mode)
+    current_fwd_mode = get_target_forward_mode(data, pid, mode)
 
-    await state.set_state(BroadcastStates.waiting_target_forward_delay)
+    await state.set_state(BroadcastStates.waiting_forward_mode)
     await call.answer("✅ Збережено")
     try:
         await call.message.edit_reply_markup(reply_markup=None)
@@ -1095,7 +1098,47 @@ async def cb_tc_src_select(call: types.CallbackQuery, state: FSMContext) -> None
     await call.message.answer(
         f"✅  Чат-джерело для {mode_label} збережено:\n"
         f"<b>{h(title)}</b>  (ID: <code>{src_pid}</code>)\n\n"
-        f"⏱  Вкажіть <b>затримку в секундах</b> (поточна: <b>{cur_delay} с</b>, 0 = одразу):",
+        f"Оберіть <b>режим надсилання кружків</b>:\n\n"
+        f"🔄 <b>По колу</b> — кружки надсилаються по черзі, кожен наступний після попереднього. "
+        f"Після останнього починається спочатку.\n\n"
+        f"🗑 <b>Відправив → видалив</b> — завжди береться перший кружок зі списку і після надсилання видаляється з чату-джерела.",
+        reply_markup=forward_mode_kb(mode, current_fwd_mode),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^bset:tc_fwd_mode:(alert|clear):(roundrobin|delete)$"))
+async def cb_tc_fwd_mode(call: types.CallbackQuery, state: FSMContext) -> None:
+    """Користувач обрав режим відправки кружків."""
+    parts = call.data.split(":")
+    mode = parts[2]
+    fwd_mode = parts[3]
+
+    fsm_data = await state.get_data()
+    pid_raw = fsm_data.get("target_pid")
+    try:
+        pid = int(pid_raw)
+    except (TypeError, ValueError):
+        await call.answer("Сесія застаріла.", show_alert=True)
+        return
+
+    data = load_user(call.from_user)
+    set_target_forward_mode(data, pid, mode, fwd_mode)
+    save_user(call.from_user, data)
+
+    cur_delay = delay_for_target(data, pid, mode)
+    mode_label = "тривоги 🚨" if mode == "alert" else "відбою ✅"
+    fwd_label = "🔄 По колу" if fwd_mode == "roundrobin" else "🗑 Відправив → видалив"
+
+    await state.set_state(BroadcastStates.waiting_target_forward_delay)
+    await call.answer(f"✅ {fwd_label}")
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await call.message.answer(
+        f"✅  Режим: <b>{fwd_label}</b>\n\n"
+        f"⏱  Вкажіть <b>затримку в секундах</b> для {mode_label} (поточна: <b>{cur_delay} с</b>, 0 = одразу):",
         reply_markup=cancel_kb(),
     )
 
