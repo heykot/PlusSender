@@ -31,6 +31,7 @@ from ...config import (
     BTN_CANCEL,
     BTN_CONNECT,
     DIV,
+    DIV_THIN,
     EMO,
 )
 from ...storage import (
@@ -39,7 +40,17 @@ from ...storage import (
     session_file_path,
     session_path,
 )
-from ...utils import card, h, section, step_indicator
+from ...utils import (
+    big_step_header,
+    card,
+    example_block,
+    h,
+    next_hint,
+    section,
+    soft_error,
+    step_indicator,
+    tip,
+)
 from ..keyboards import (
     cancel_kb,
     connect_existing_session_kb,
@@ -115,28 +126,32 @@ async def start_connection(msg: types.Message, state: FSMContext) -> None:
     sess_name = msg.from_user.username or msg.from_user.id
 
     intro = card(
-        title="Підключення Telegram-акаунта",
+        title="Підключення вашого Telegram",
         emoji=EMO["key"],
         sections=[
             (
-                "Що це таке",
-                "Бот використовуватиме <b>вашу сесію</b> Telethon, щоб "
-                "надсилати повідомлення від вашого імені у вибрані чати "
-                "на тривогу та відбій.",
+                "Навіщо це потрібно",
+                "Щоб бот міг надсилати повідомлення <b>від вашого імені</b> "
+                "(а не «від бота»), йому потрібен доступ до вашого акаунта "
+                "через офіційні ключі Telegram.\n"
+                "<i>Це робиться один раз — далі все працює само.</i>",
             ),
             (
-                "Що знадобиться",
-                "①  <b>api_id</b> та <b>api_hash</b>\n"
-                "    <a href='https://my.telegram.org/auth'>my.telegram.org</a> → "
-                "<i>API Development Tools</i> → створіть додаток\n"
-                "②  Номер телефону <code>+380…</code>\n"
-                "③  Код підтвердження з Telegram\n"
-                "④  Пароль 2FA (якщо є)",
+                "Що знадобиться (4 речі)",
+                "①  🔑  <b>api_id</b> та <b>api_hash</b>\n"
+                "      <i>Беруться на</i> "
+                "<a href='https://my.telegram.org/auth'>my.telegram.org</a> "
+                "<i>→ API Development Tools → Create application</i>\n\n"
+                "②  📱  <b>Номер телефону</b> у форматі <code>+380XXXXXXXXX</code>\n\n"
+                "③  🔢  <b>Код</b>, який Telegram надішле у ваш акаунт\n\n"
+                "④  🔐  <b>Пароль 2FA</b> — лише якщо у вас увімкнена двофакторка",
             ),
             (
-                f"{EMO['shield']} Безпека",
-                f"api_id/hash зберігаються лише у вашому профілі.\n"
-                f"Сесія Telethon — файл <code>sessions/{sess_name}.session</code>.",
+                f"{EMO['shield']} Це безпечно?",
+                "<b>Так.</b> Ключі зберігаються тільки у вашому профілі тут, "
+                "на сервері бота. Сесія — це файл "
+                f"<code>sessions/{sess_name}.session</code>.\n"
+                "Жодних паролів я не бачу й не передаю.",
             ),
         ],
     )
@@ -145,14 +160,15 @@ async def start_connection(msg: types.Message, state: FSMContext) -> None:
     if has_session:
         await msg.answer(
             f"{EMO['info']}  <b>У вас уже є збережена сесія</b>\n"
-            f"<i>Що робимо?</i>",
+            f"<i>Можна продовжити з нею або створити нову.\n"
+            f"Якщо все працює — лишайте поточну.</i>",
             reply_markup=connect_existing_session_kb(),
         )
         return
 
     await msg.answer(
         f"{EMO['rocket']}  <b>Готові почати?</b>\n"
-        f"<i>Натискайте кнопку нижче — і поїхали.</i>",
+        f"<i>Це займе 2–3 хвилини. Натискайте «🚀 Почати» — і поїхали!</i>",
         reply_markup=connect_intro_kb(),
     )
 
@@ -200,15 +216,16 @@ async def begin_via_button(call: types.CallbackQuery, state: FSMContext) -> None
 async def _begin_credentials(msg: types.Message, state: FSMContext, user: types.User) -> None:
     await state.set_state(ConnectStates.waiting_credentials)
     text = (
-        f"{EMO['key']}  <b>API credentials</b>\n"
-        f"{step_indicator(1, 4)}\n"
-        f"{DIV}\n"
-        f"Надішліть <b>api_id</b> та <b>api_hash</b> <u>одним повідомленням</u>.\n\n"
-        f"<b>Приклади:</b>\n"
-        f"<code>12345678 abcdef0123456789abcdef0123456789</code>\n"
-        f"<code>12345678:abcdef0123456789abcdef0123456789</code>"
+        f"{big_step_header(1, 4, 'Ключі API', emoji=EMO['key'])}\n\n"
+        f"Зайдіть на "
+        f"<a href='https://my.telegram.org/auth'>my.telegram.org</a> → "
+        f"<b>API Development Tools</b> → створіть додаток.\n"
+        f"Скопіюйте <b>api_id</b> (число) та <b>api_hash</b> (довгий рядок) "
+        f"і надішліть сюди <u>одним повідомленням</u>.\n\n"
+        f"{example_block('12345678 abcdef0123456789abcdef0123456789', '12345678:abcdef0123456789abcdef0123456789')}\n\n"
+        f"{tip('формат не важливий — пробіл, двокрапка, новий рядок чи навіть з підписами.')}"
     )
-    await msg.answer(text, reply_markup=cancel_kb())
+    await msg.answer(text, reply_markup=cancel_kb(), disable_web_page_preview=True)
 
 
 # ===================== Крок 1: api credentials =====================
@@ -217,11 +234,20 @@ async def step_credentials(msg: types.Message, state: FSMContext) -> None:
     parsed = _parse_credentials(msg.text or "")
     if not parsed:
         await msg.answer(
-            f"{EMO['err']}  <b>Не зміг розпізнати credentials</b>\n\n"
-            f"<i>Підказки:</i>\n"
-            f"  • <b>api_id</b> — число (зазвичай 7–8 цифр)\n"
-            f"  • <b>api_hash</b> — рядок із 32 hex-символів\n\n"
-            f"Спробуйте ще раз або натисніть «{h(BTN_CANCEL)}»."
+            soft_error(
+                "Не зміг розпізнати ключі",
+                body=(
+                    "Перевірте, що ви скопіювали обидва значення:\n"
+                    "  • <b>api_id</b> — число (зазвичай 7–8 цифр)\n"
+                    "  • <b>api_hash</b> — рядок із 32 hex-символів\n\n"
+                    + example_block(
+                        "12345678 abcdef0123456789abcdef0123456789",
+                        "12345678:abcdef0123456789abcdef0123456789",
+                    )
+                    + f"\n\nАбо натисніть «{h(BTN_CANCEL)}» щоб вийти."
+                ),
+                retry=False,
+            )
         )
         return
 
@@ -242,11 +268,12 @@ async def step_credentials(msg: types.Message, state: FSMContext) -> None:
     await state.set_state(ConnectStates.waiting_phone)
 
     await msg.answer(
-        f"{EMO['ok']}  Прийнято: <code>api_id={api_id}</code>\n\n"
-        f"{EMO['phone']}  <b>Номер телефону</b>\n"
-        f"{step_indicator(2, 4)}\n"
-        f"{DIV}\n"
-        f"Надішліть номер у форматі <code>+380XXXXXXXXX</code>:",
+        f"{EMO['ok']}  <b>Чудово!</b>  Ключі прийнято: "
+        f"<code>api_id={api_id}</code>\n\n"
+        f"{big_step_header(2, 4, 'Номер телефону', emoji=EMO['phone'])}\n\n"
+        f"Надішліть номер вашого Telegram у міжнародному форматі.\n\n"
+        f"{example_block('+380501234567', '+380 50 123 45 67')}\n\n"
+        f"{tip('пробіли і дужки приберу автоматично — головне щоб був код країни.')}",
         reply_markup=cancel_kb(),
     )
 
@@ -257,8 +284,10 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
     phone = _normalize_phone(msg.text or "")
     if not phone:
         await msg.answer(
-            f"{EMO['err']}  <b>Невірний формат номера</b>\n"
-            f"<i>Приклад:</i> <code>+380501234567</code>"
+            soft_error(
+                "Не схоже на номер телефону",
+                body=example_block("+380501234567", "+380 50 123 45 67"),
+            )
         )
         return
 
@@ -272,7 +301,12 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
         await client.connect()
     except Exception as e:
         await msg.answer(
-            f"{EMO['err']} Не вдалося з'єднатися з Telegram: {h(str(e))}"
+            soft_error(
+                "Не вдалося з'єднатися з Telegram",
+                body=f"<code>{h(str(e))}</code>\n\n"
+                     f"<i>Перевірте інтернет і повторіть «🔌 Підключити».</i>",
+                retry=False,
+            )
         )
         try:
             await client.disconnect()
@@ -283,14 +317,25 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
     try:
         sent = await client.send_code_request(phone)
     except PhoneNumberInvalidError:
-        await msg.answer(f"{EMO['err']} Номер недійсний. Перевірте і надішліть ще раз.")
+        await msg.answer(
+            soft_error(
+                "Номер не приймається Telegram",
+                body="Перевірте, чи правильно скопійовано номер. Має бути зареєстрований у Telegram.",
+            )
+        )
         try:
             await client.disconnect()
         except Exception:
             pass
         return
     except Exception as e:
-        await msg.answer(f"{EMO['err']} Помилка надсилання коду: {h(str(e))}")
+        await msg.answer(
+            soft_error(
+                "Не вдалося надіслати код",
+                body=f"<code>{h(str(e))}</code>",
+                retry=False,
+            )
+        )
         try:
             await client.disconnect()
         except Exception:
@@ -302,12 +347,11 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
     await state.set_state(ConnectStates.waiting_code)
 
     await msg.answer(
-        f"{EMO['code']}  <b>Код підтвердження</b>\n"
-        f"{step_indicator(3, 4)}\n"
-        f"{DIV}\n"
-        f"Telegram надіслав код у ваш акаунт. Введіть його сюди.\n\n"
-        f"<i>Формат важливий — приймаю вигляді:</i>\n"
-        f"  <code>1 2 3 4 5</code>\n\n",
+        f"{EMO['ok']}  <b>Номер прийнято.</b>  Telegram уже надіслав код у ваш акаунт.\n\n"
+        f"{big_step_header(3, 4, 'Код підтвердження', emoji=EMO['code'])}\n\n"
+        f"Введіть код, який ви щойно отримали від Telegram.\n\n"
+        f"{example_block('1 2 3 4 5', '12345', '1-2-3-4-5')}\n\n"
+        f"{tip('пробіли, дужки і тире — не проблема. Я витягну тільки цифри.')}",
         reply_markup=cancel_kb(),
     )
 
@@ -327,8 +371,10 @@ async def step_code(msg: types.Message, state: FSMContext) -> None:
     code = _normalize_code(msg.text or "")
     if not code:
         await msg.answer(
-            f"{EMO['err']}  <b>У повідомленні немає цифр</b>\n"
-            f"<i>Введіть код з Telegram.</i>"
+            soft_error(
+                "У повідомленні не знайшов жодної цифри",
+                body="Введіть код, який Telegram надіслав вам у застосунок.",
+            )
         )
         return
 
@@ -341,32 +387,41 @@ async def step_code(msg: types.Message, state: FSMContext) -> None:
     except SessionPasswordNeededError:
         await state.set_state(ConnectStates.waiting_password)
         await msg.answer(
-            f"{EMO['lock']}  <b>Двофакторна автентифікація</b>\n"
-            f"{step_indicator(4, 4)}\n"
-            f"{DIV}\n"
-            f"На вашому акаунті ввімкнено 2FA.\n"
-            f"<i>Введіть cloud password — точно як є, одним повідомленням.\n"
-            f"Повідомлення буде видалено одразу після отримання.</i>",
+            f"{big_step_header(4, 4, 'Пароль 2FA (двофакторка)', emoji=EMO['lock'])}\n\n"
+            f"На вашому акаунті ввімкнено двофакторну автентифікацію.\n"
+            f"Введіть свій <b>cloud password</b> від Telegram <u>точно як є</u>, "
+            f"одним повідомленням.\n\n"
+            f"{tip('повідомлення з паролем буде <b>видалено одразу</b> після отримання — для безпеки.')}",
             reply_markup=cancel_kb(),
         )
         return
     except PhoneCodeInvalidError:
         await msg.answer(
-            f"{EMO['err']}  <b>Невірний код</b>\n"
-            f"<i>Спробуйте ще раз.</i>"
+            soft_error(
+                "Код не підійшов",
+                body="Перевірте, чи ви скопіювали останній код, який надіслав Telegram.",
+            )
         )
         return
     except PhoneCodeExpiredError:
         await msg.answer(
-            f"{EMO['err']}  <b>Код прострочений</b>\n"
-            f"<i>Почніть підключення заново через «{h(BTN_CONNECT)}».</i>"
+            soft_error(
+                "Код вже прострочений",
+                body=f"Telegram дає на код кілька хвилин. Почніть заново через «{h(BTN_CONNECT)}» — "
+                     f"ми надішлемо новий код.",
+                retry=False,
+            )
         )
         await _disconnect_active(msg.from_user.id)
         await state.clear()
         return
     except Exception as e:
         await msg.answer(
-            f"{EMO['err']}  <b>Помилка авторизації</b>\n<code>{h(str(e))}</code>"
+            soft_error(
+                "Не вийшло авторизуватися",
+                body=f"<code>{h(str(e))}</code>",
+                retry=False,
+            )
         )
         return
 
@@ -393,13 +448,24 @@ async def step_password(msg: types.Message, state: FSMContext) -> None:
         pass
 
     if not password:
-        await msg.answer(f"{EMO['err']} Пароль порожній. Введіть пароль 2FA:")
+        await msg.answer(
+            soft_error(
+                "Пароль порожній",
+                body="Введіть свій cloud password від Telegram (двофакторна автентифікація).",
+            )
+        )
         return
 
     try:
         await client.sign_in(password=password)
     except Exception as e:
-        await msg.answer(f"{EMO['err']} Невірний пароль: {h(str(e))}")
+        await msg.answer(
+            soft_error(
+                "Пароль не підійшов",
+                body=f"<code>{h(str(e))}</code>\n\n"
+                     f"<i>Перевірте розкладку та регістр літер.</i>",
+            )
+        )
         return
 
     await _finish_success(msg, state)
@@ -411,17 +477,20 @@ async def _finish_success(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
 
     success_text = (
-        f"{EMO['ok']} <b>Сесію успішно створено!</b>\n{DIV}\n"
-        f"Тепер бот зможе надсилати повідомлення від вашого імені на тривогу/відбій у Києві.\n\n"
-        f"📋 <b>Що далі:</b>\n"
-        f"1️⃣  Натисніть «🎯 Налаштувати розсилку» — оберіть чати, тексти й затримки\n"
-        f"2️⃣  Поверніться у меню та натисніть «▶️ Старт» щоб увімкнути авто-розсилку\n"
-        f"3️⃣  Стан можна перевірити в «👤 Профіль»\n\n"
-        f"{EMO['warn']} Для початку роботи потрібен активний доступ — перевірте в розділі «💳 Оплата»."
+        f"🎉  <b>Готово! Сесію створено.</b>\n"
+        f"{DIV}\n"
+        f"Тепер бот зможе надсилати повідомлення <b>від вашого імені</b> "
+        f"у вибрані чати на тривогу й відбій у Києві.\n\n"
+        f"<b>Залишилось 2 кроки:</b>\n"
+        f"  ①  🎛  <b>Налаштування</b>  →  оберіть чати та що в них надсилати\n"
+        f"  ②  ▶️  <b>Старт</b>  →  увімкніть авто-роботу\n\n"
+        f"{EMO['warn']}  <i>Якщо бот не реагує — перевірте, чи активний "
+        f"доступ у «💳 Оплата».</i>"
     )
     await msg.answer(success_text, reply_markup=main_menu_kb(msg.from_user))
     await msg.answer(
-        f"{EMO['bolt']} Зробимо налаштування зараз?",
+        f"{EMO['bolt']}  <b>Хочете налаштувати розсилку зараз?</b>\n"
+        f"<i>Це найцікавіша частина — обираємо чати та що надсилати.</i>",
         reply_markup=connect_post_success_kb(),
     )
 

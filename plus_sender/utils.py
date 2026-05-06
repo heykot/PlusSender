@@ -18,7 +18,12 @@ from .config import (
     DIV_THIN,
     EMPTY_TEXT_MARKERS,
     EMO,
+    EXAMPLE_PREFIX,
     MAX_DELAY_SECONDS,
+    NEXT_PREFIX,
+    SOFT_ERROR_PREFIX,
+    SOFT_RETRY,
+    TIP_PREFIX,
 )
 
 
@@ -55,6 +60,68 @@ def step_indicator(step: int, total: int) -> str:
     step = max(1, min(step, total))
     dots = "●" * step + "○" * (total - step)
     return f"<i>Крок {step} з {total}  {dots}</i>"
+
+
+def big_step_header(step: int, total: int, title: str, emoji: str = "✨") -> str:
+    """Великий заголовок кроку: емоджі, номер, назва, прогрес-точки.
+
+    Приклад:
+        🔑  Крок 2 з 4
+        ━━━━━━━━━━━━━━━
+        ●●○○   Номер телефону
+    """
+    step = max(1, min(step, total))
+    dots = "●" * step + "○" * (total - step)
+    return (
+        f"{emoji}  <b>Крок {step} з {total}</b>\n"
+        f"{DIV_THIN}\n"
+        f"<i>{dots}</i>   <b>{title}</b>"
+    )
+
+
+def tip(text: str) -> str:
+    """Дружня підказка-курсив. Призначена для маленьких пояснень під полем вводу."""
+    return f"{TIP_PREFIX} {text}"
+
+
+def example_block(*lines: str) -> str:
+    """Блок із прикладами вводу. Кожен рядок іде у <code>…</code>.
+
+    Використовуй так:
+        example_block("12345678 abcdef…", "12345678:abcdef…")
+    """
+    if not lines:
+        return ""
+    body = "\n".join(f"  <code>{line}</code>" for line in lines)
+    return f"{EXAMPLE_PREFIX}\n{body}"
+
+
+def next_hint(text: str) -> str:
+    """«Що далі» — м'яка підказка наступної дії."""
+    return f"{NEXT_PREFIX} <i>{text}</i>"
+
+
+def soft_error(headline: str, body: str = "", retry: bool = True) -> str:
+    """Дружня помилка: «Хм, щось не так… Спробуйте ще раз».
+
+    Використовуй замість сухого «❌ помилка».
+    """
+    parts = [SOFT_ERROR_PREFIX]
+    if headline:
+        parts.append(f"<i>{headline}</i>")
+    if body:
+        parts.append(body)
+    if retry:
+        parts.append(SOFT_RETRY)
+    return "\n".join(parts)
+
+
+def warm_greeting(name: Optional[str]) -> str:
+    """Тепле привітання за іменем користувача (без emoji-перегруження)."""
+    safe = h(name) if name else ""
+    if safe:
+        return f"Привіт, <b>{safe}</b>! 👋"
+    return "Привіт! 👋"
 
 
 def section(title: str, body: str) -> str:

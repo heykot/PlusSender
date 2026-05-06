@@ -22,6 +22,7 @@ from ...config import (
     BTN_SUPPORT,
     CANCEL_TEXTS,
     DIV,
+    DIV_THIN,
     EMO,
     TAGLINE,
 )
@@ -38,9 +39,11 @@ from ...utils import (
     access_status_line,
     card,
     h,
+    next_hint,
     section,
     status_badge,
     status_label,
+    warm_greeting,
 )
 from ..keyboards import main_menu_kb
 
@@ -57,39 +60,66 @@ async def cmd_start(msg: types.Message, state: FSMContext) -> None:
     targets_count = len(get_targets(data))
     has_session = bool(data.get("api_id") and data.get("api_hash"))
 
-    # Заголовок з брендингом
+    # ── Тепле привітання ──
+    greeting = warm_greeting(user.first_name)
     header = (
+        f"{greeting}\n"
         f"🤖  <b>{BRAND}</b>  <i>· {TAGLINE}</i>\n"
         f"{DIV}"
     )
 
     intro = (
-        "Привіт! Я автоматично надсилаю повідомлення з вашого "
-        "Telegram у вибрані чати, коли в Києві <b>починається</b> або "
-        "<b>закінчується</b> повітряна тривога."
+        "Я допомагаю вам <b>автоматично</b> надсилати повідомлення у ваші чати, "
+        "коли в Києві <b>починається</b> або <b>закінчується</b> повітряна тривога.\n"
+        "<i>Ви налаштовуєте — далі бот працює сам.</i>"
     )
 
-    # Швидкий старт — три кроки із чек-боксами поточного стану
-    step1 = "✅" if has_session else "▫️"
-    step2 = "✅" if targets_count > 0 else "▫️"
-    step3 = "✅" if active else "▫️"
+    # ── Прогрес: 3 кроки з великими маркерами ──
+    def _mark(done: bool) -> str:
+        return "✅" if done else "▫️"
 
-    quick = section(
-        "Швидкий старт",
-        f"{step1}  ① 🔌 <b>Підключення</b> — створюємо Telethon-сесію\n"
-        f"{step2}  ② 🎯 <b>Налаштування</b> — обираємо чати та тексти\n"
-        f"{step3}  ③ ▶️ <b>Старт</b> — вмикаємо авто-розсилку",
+    quick_body = (
+        f"{_mark(has_session)}  <b>① Підключення</b>  🔌\n"
+        f"      <i>прив'язуємо ваш Telegram-акаунт</i>\n\n"
+        f"{_mark(targets_count > 0)}  <b>② Налаштування</b>  🎯\n"
+        f"      <i>обираємо чати та повідомлення</i>\n\n"
+        f"{_mark(active)}  <b>③ Старт</b>  ▶️\n"
+        f"      <i>вмикаємо авто-розсилку</i>"
     )
+    quick = section("Як почати — 3 простих кроки", quick_body)
 
-    # Стан-картка
+    # ── Стан ──
     state_lines = [
         f"Режим:    {status_badge(active)}",
         f"Чатів:    <b>{targets_count}</b>",
         f"Доступ:   <b>{access_status_line(data.get('access_until'))}</b>",
     ]
-    state_block = section("Поточний стан", "\n".join(state_lines))
+    state_block = section("Ваш поточний стан", "\n".join(state_lines))
 
-    text = f"{header}\n{intro}\n\n{quick}\n\n{state_block}"
+    # ── Динамічна підказка наступної дії ──
+    if not has_access(user):
+        hint = next_hint(
+            "оплатіть доступ у розділі «💳 Оплата» — і повертайтесь сюди."
+        )
+    elif not has_session:
+        hint = next_hint(
+            "натисніть «🔌 Підключити» — це найдовший крок, далі простіше."
+        )
+    elif targets_count == 0:
+        hint = next_hint(
+            "натисніть «🎛 Налаштування» — оберіть чати, у які буде надсилатися сповіщення."
+        )
+    elif not active:
+        hint = next_hint(
+            "натисніть «▶️ Старт» — і бот почне реагувати на наступну тривогу."
+        )
+    else:
+        hint = (
+            f"{EMO['star']}  <b>Все готово!</b>\n"
+            f"<i>Бот уже стежить за тривогою. Можна закривати чат — він працює сам.</i>"
+        )
+
+    text = f"{header}\n{intro}\n\n{quick}\n\n{state_block}\n\n{hint}"
     await msg.answer(text, reply_markup=main_menu_kb(user))
 
 
@@ -99,22 +129,58 @@ async def cmd_help(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
     from ...config import PROJECT_ROOT
     instruction_path = PROJECT_ROOT / "ІНСТРУКЦІЯ.html"
+
+    # Короткий FAQ — щоб користувач отримав відповіді одразу в чаті
+    faq = card(
+        title="Швидка довідка",
+        emoji=EMO["info"],
+        sections=[
+            (
+                "Що це за бот",
+                "Я надсилаю повідомлення у ваші чати, коли в Києві вмикається "
+                "або вимикається повітряна тривога. Все автоматично — ви лише "
+                "налаштовуєте, що саме надсилати.",
+            ),
+            (
+                "Як почати — за 3 кроки",
+                "①  🔌  <b>Підключити</b> — прив'язуємо ваш акаунт через Telethon\n"
+                "②  🎛  <b>Налаштування</b> — обираємо чати, тексти, кружечки\n"
+                "③  ▶️  <b>Старт</b> — вмикаємо авто-роботу",
+            ),
+            (
+                "Часті питання",
+                "<b>Що таке api_id / api_hash?</b>\n"
+                "<i>Ключі вашого Telegram-акаунта. Беруться на "
+                "my.telegram.org → API Development Tools.</i>\n\n"
+                "<b>Чи безпечно?</b>\n"
+                "<i>Так. Ключі зберігаються лише у вашому профілі на сервері бота. "
+                "Жодних паролів я не бачу й не передаю далі.</i>\n\n"
+                "<b>Чому не надсилається?</b>\n"
+                "<i>Перевірте: оплачений доступ, активна сесія, обрано чати, "
+                "і кнопка «▶️ Старт» натиснута. Усе це видно в «👤 Профіль».</i>",
+            ),
+            (
+                "Команди",
+                "/start — головне меню\n"
+                "/connect — майстер підключення\n"
+                "/on, /off — увімкнути / вимкнути\n"
+                "/cancel — скасувати поточний крок",
+            ),
+        ],
+    )
+
     if instruction_path.is_file():
         doc = types.FSInputFile(str(instruction_path), filename="Plus_Sender_Інструкція.html")
+        await msg.answer(faq, reply_markup=main_menu_kb(msg.from_user))
         await msg.answer_document(
             doc,
             caption=(
-                f"{EMO['info']}  <b>Інструкція Plus Sender</b>\n"
-                f"Збережіть файл і відкрийте у браузері — повний посібник від А до Я."
+                f"📖  <b>Повна інструкція в HTML</b>\n"
+                f"<i>Збережіть і відкрийте у браузері — там є все від А до Я зі скріншотами.</i>"
             ),
-            reply_markup=main_menu_kb(msg.from_user),
         )
     else:
-        await msg.answer(
-            f"{EMO['info']}  <b>Інструкція не знайдена</b>\n"
-            f"Файл <code>ІНСТРУКЦІЯ.html</code> відсутній у папці бота.",
-            reply_markup=main_menu_kb(msg.from_user),
-        )
+        await msg.answer(faq, reply_markup=main_menu_kb(msg.from_user))
 
 
 @router.message(Command("cancel"))

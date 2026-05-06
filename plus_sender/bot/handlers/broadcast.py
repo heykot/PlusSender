@@ -44,10 +44,14 @@ from ...storage import (
 from ...utils import (
     default_delay_seconds,
     default_message_text,
+    example_block,
     h,
+    next_hint,
     parse_text_input,
     preview_message,
     section,
+    soft_error,
+    tip,
     truncate,
 )
 from ..keyboards import (
@@ -453,18 +457,27 @@ async def show_broadcast_settings(
     selected = get_targets(data)
 
     if query is None:
-        header = "💬  <b>Останні діалоги</b>  (до 30)"
+        header = (
+            "💬  <b>Ваші останні чати</b>  <i>(до 30)</i>\n"
+            f"{HR}\n"
+            "<i>Це ваші чати з Telegram. Тицьніть кнопку щоб додати чат у розсилку — "
+            "поруч з'явиться галочка ✅.</i>"
+        )
     else:
         if not items:
             await msg.answer(
-                f"{EMO['info']}  Нічого не знайдено для <code>{h(query)}</code>.",
+                f"{EMO['info']}  <b>Нічого не знайдено</b> для <code>{h(query)}</code>.\n"
+                f"<i>Спробуйте іншу назву або введіть числовий ID чату.</i>",
                 reply_markup=main_menu_kb(user),
             )
             return
-        header = "🔍  <b>Результати пошуку</b>  (до 60)"
+        header = (
+            f"🔍  <b>Результати пошуку</b> «{h(query)}»  <i>(до 60)</i>\n"
+            f"{HR}"
+        )
 
     pretty = _items_to_pretty(items, selected)
-    await _send_long(msg, f"{header}\n{HR}\n\n{pretty}")
+    await _send_long(msg, f"{header}\n\n{pretty}")
 
     if state is not None:
         await state.update_data(
@@ -478,10 +491,14 @@ async def show_broadcast_settings(
             }
         )
 
+    hint = (
+        "<i>👇 Тицяйте по чатах щоб обрати їх для розсилки. "
+        "Максимум — 4 чати.</i>\n"
+        "<i>Далі — «⚙️ Налаштування кожного чату»: задати, що саме надсилати в кожен.</i>"
+    )
+
     await msg.answer(
-        f"{_settings_summary(data)}\n\n"
-        f"<i>Натискайте чати щоб додати/прибрати. "
-        f"«⚙️ Налаштування кожного чату» — задати текст або чат-джерело.</i>",
+        f"{_settings_summary(data)}\n\n{hint}",
         reply_markup=broadcast_settings_kb(items, selected),
     )
 
@@ -541,7 +558,10 @@ async def cb_search(call: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(BroadcastStates.waiting_search_query)
     await call.answer()
     await call.message.answer(
-        f"{EMO['magn']} Введіть текст для пошуку (назва / @username / ID):",
+        f"{EMO['magn']}  <b>Пошук чату</b>\n{HR}\n\n"
+        f"Не бачите потрібний чат у списку? Введіть його назву, @username або числовий ID.\n\n"
+        f"{example_block('Робочий чат', '@username_chat', '-1001234567890')}\n\n"
+        f"{tip('пошук — нечутливий до регістру, шукає по всьому списку ваших діалогів.')}",
         reply_markup=cancel_kb(),
     )
 
@@ -637,9 +657,14 @@ async def cb_chat_settings(call: types.CallbackQuery, state: FSMContext) -> None
     await state.update_data(text_targets_map=mapping)
 
     await call.message.answer(
-        f"⚙️  <b>Налаштування по чатах</b>\n{HR}\n\n"
-        f"Оберіть чат зі списку щоб налаштувати що надсилати при <b>тривозі 🚨</b> та <b>відбої ✅</b>.\n\n"
-        f"<b>⚙️</b> — обидва налаштовані  ·  <b>📝</b> — один  ·  <b>↩️</b> — глобальний дефолт",
+        f"⚙️  <b>Налаштування кожного чату</b>\n{HR}\n\n"
+        f"Тут ви для кожного чату задаєте, що саме надсилати "
+        f"при <b>🚨 тривозі</b> та при <b>✅ відбої</b>.\n\n"
+        f"<b>Іконки поруч з чатом</b> — це підказка стану:\n"
+        f"  ⚙️  — все налаштовано\n"
+        f"  📝  — налаштовано тільки одне (тривога або відбій)\n"
+        f"  ↩️  — поки що використовується глобальний дефолт\n\n"
+        f"<i>👇 Натисніть будь-який чат, щоб увійти в його налаштування.</i>",
         reply_markup=markup,
     )
 
@@ -680,11 +705,14 @@ async def cb_textchat_start(call: types.CallbackQuery, state: FSMContext) -> Non
     await call.answer()
     title = h(_target_title(data, pid))
     await call.message.answer(
-        f"⚙️  <b>{title}</b>\n{HR}\n\n"
-        f"Натисніть на режим щоб обрати що надсилати:\n"
-        f"<b>✍️ Текст</b> — введіть повідомлення вручну\n"
-        f"<b>🎥 Кружок з чату</b> — Telethon надішле відео-кружок з вибраного чату без тегу «Переслано від»\n"
-        f"<b>🚫 Не надсилати</b> — цей чат пропускається",
+        f"⚙️  <b>Налаштування для:</b>  {title}\n{HR}\n\n"
+        f"Тут ви обираєте, що саме надсилатиметься в цей чат "
+        f"при <b>🚨 тривозі</b> і при <b>✅ відбої</b>.\n\n"
+        f"<b>Натисніть на «🚨 Тривога» або «✅ Відбій»</b> — і виберіть один із трьох варіантів:\n"
+        f"  ✍️  <b>Текст</b> — звичайне повідомлення (можна додати фото / голос / відео)\n"
+        f"  🎥  <b>Кружок з чату</b> — бот надішле відео-кружечок з іншого чату <i>без позначки «переслано»</i>\n"
+        f"  🚫  <b>Не надсилати</b> — у цьому чаті ця подія пропускається\n\n"
+        f"{tip('іконка ↩️ означає що використовується глобальний дефолт.')}",
         reply_markup=_build_chat_kb(data, pid),
     )
 
@@ -854,10 +882,14 @@ async def cb_tc_type_text(call: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(BroadcastStates.waiting_target_mode_text)
     await call.answer()
     await call.message.answer(
-        f"{'🚨' if mode == 'alert' else '✅'}  <b>Текст для {mode_label}</b>\n{HR}\n\n"
-        f"Поточний: <code>{h(preview_message(str(current_text), 120))}</code>  ⏱ <b>{cur_delay} с</b>\n\n"
-        f"Надішліть новий текст або медіа (кружечок, фото, відео, голос).\n"
-        f"«{h(BTN_DISABLE_TEXT)}» — не надсилати для цього чату.",
+        f"{'🚨' if mode == 'alert' else '✅'}  <b>Що надсилати під час {mode_label}</b>\n{HR}\n\n"
+        f"<b>Зараз:</b>  <code>{h(preview_message(str(current_text), 120))}</code>\n"
+        f"<b>Затримка:</b>  ⏱ <b>{cur_delay} с</b>\n\n"
+        f"<b>Надішліть мені:</b>\n"
+        f"  ✍️  звичайний текст (можна з emoji)\n"
+        f"  🖼  фото, відео, кружечок або голосове\n"
+        f"  🚫  або кнопку «{h(BTN_DISABLE_TEXT)}» — щоб у цей чат нічого не йшло\n\n"
+        f"{example_block('+', '✅ Відбій тривоги', 'УВАГА! Усі в укриття!')}",
         reply_markup=text_input_kb(),
     )
 
@@ -1198,16 +1230,22 @@ async def target_forward_delay_input(msg: types.Message, state: FSMContext) -> N
 def _schedule_text(data: dict) -> str:
     sched = get_schedule(data)
     if sched["enabled"]:
-        status = f"🟢 <b>Активний</b>: <b>{sched['from_time']}</b> — <b>{sched['to_time']}</b>"
+        status = (
+            f"🟢  <b>Розклад увімкнено</b>\n"
+            f"   Бот працюватиме лише з <b>{sched['from_time']}</b> до <b>{sched['to_time']}</b>"
+        )
         if sched["from_time"] > sched["to_time"]:
-            status += "  <i>(нічний діапазон)</i>"
+            status += "\n   <i>(нічний діапазон — переходить через північ)</i>"
     else:
-        status = "🔴 <b>Вимкнено</b> — розсилка працює цілодобово"
+        status = (
+            "🔴  <b>Розклад вимкнено</b>\n"
+            "   Бот працює <b>цілодобово</b>"
+        )
     return (
         f"⏰  <b>Розклад роботи</b>\n{HR}\n\n"
         f"{status}\n\n"
-        f"<i>Якщо тривога спрацює поза зазначеним часом — повідомлення <b>не надсилатимуться</b>.</i>\n"
-        f"<i>Час — серверний (Kyiv UTC+2/+3).</i>"
+        f"<i>💡 Поза цим часом тривога/відбій просто пропускаються — повідомлення не надсилаються.</i>\n"
+        f"<i>🕐 Час серверний — Київ (UTC+2 / UTC+3 влітку).</i>"
     )
 
 
@@ -1268,9 +1306,11 @@ async def cb_sched_edit(call: types.CallbackQuery, state: FSMContext) -> None:
     await state.set_state(BroadcastStates.waiting_schedule_from)
     await call.answer()
     await call.message.answer(
-        f"⏰  <b>Час початку роботи</b>\n{HR}\n\n"
+        f"⏰  <b>Час, з якого починаємо працювати</b>\n{HR}\n\n"
         f"Поточний: <b>{sched['from_time']}</b>\n\n"
-        f"Введіть час у форматі <b>ГГ:ХХ</b>  (наприклад: <code>08:00</code>):",
+        f"Введіть час у форматі <b>ГГ:ХХ</b>:\n\n"
+        f"{example_block('08:00', '22:30', '00:00')}\n\n"
+        f"{tip('двокрапка обовʼязкова. Однозначний формат «8:00» теж приймається.')}",
         reply_markup=cancel_kb(),
     )
 
@@ -1297,11 +1337,11 @@ async def sched_from_input(msg: types.Message, state: FSMContext) -> None:
     data = load_user(msg.from_user)
     sched = get_schedule(data)
     await msg.answer(
-        f"✅ Початок: <b>{raw}</b>\n\n"
-        f"⏰  <b>Час кінця роботи</b>\n\n"
+        f"✅  Початок: <b>{raw}</b>\n\n"
+        f"⏰  <b>Тепер — час, до якого працюємо</b>\n\n"
         f"Поточний: <b>{sched['to_time']}</b>\n\n"
-        f"Введіть час закінчення (<code>22:00</code>):\n"
-        f"<i>Якщо кінець &lt; початку — вважається нічним діапазоном.</i>",
+        f"{example_block('22:00', '06:00', '23:59')}\n\n"
+        f"{tip('якщо кінець менший за початок — вважатиму, що це нічний діапазон через північ. Наприклад «22:00 → 06:00» = всю ніч.')}",
         reply_markup=cancel_kb(),
     )
 

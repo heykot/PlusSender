@@ -28,6 +28,7 @@ from ...utils import (
     default_delay_seconds,
     default_message_text,
     h,
+    next_hint,
     preview_message,
     safe_username_from,
     section,
@@ -208,18 +209,18 @@ async def show_profile(msg: types.Message) -> None:
     if sess_exists:
         try:
             mtime = datetime.fromtimestamp(os.path.getmtime(sess_file))
-            sess_line = f"<b>є</b>  <i>({mtime:%d.%m.%Y %H:%M})</i>"
+            sess_line = f"✅ <b>підключено</b>  <i>({mtime:%d.%m.%Y %H:%M})</i>"
         except OSError:
-            sess_line = "<b>є</b>"
+            sess_line = "✅ <b>підключено</b>"
     else:
-        sess_line = "<i>немає — натисніть «🔌 Підключити»</i>"
+        sess_line = "⚠️ <i>не підключено — натисніть «🔌 Підключити»</i>"
 
     cred_parts: list[str] = []
     if api_id:
         cred_parts.append(f"api_id <code>{api_id}</code>")
     if api_hash and isinstance(api_hash, str):
         cred_parts.append(f"api_hash <code>{h(api_hash[:6])}…</code>")
-    cred_line = "  ·  ".join(cred_parts) if cred_parts else "<i>не налаштовано</i>"
+    cred_line = "  ·  ".join(cred_parts) if cred_parts else "<i>ключі не збережено</i>"
 
     session_body = (
         f"Стан:    {sess_line}\n"
@@ -272,14 +273,26 @@ async def show_profile(msg: types.Message) -> None:
     chats_detail = _chats_section(data, fwd_counts)
 
     text = card(
-        title="Профіль",
+        title="Ваш профіль",
         emoji=EMO["user"],
         sections=[
             ("Акаунт", account_body),
-            ("Сесія Telethon", session_body),
-            ("Розсилка", settings_body),
-            ("Тексти по чатах", chats_detail),
+            ("Сесія Telegram", session_body),
+            ("Налаштування розсилки", settings_body),
+            ("Що саме надсилається у кожен чат", chats_detail),
         ],
     )
 
-    await msg.answer(text, reply_markup=main_menu_kb(user))
+    # ── Динамічна підказка наступної дії ──
+    if not sess_exists:
+        hint = next_hint("підключіть свій Telegram через «🔌 Підключити».")
+    elif n_targets == 0:
+        hint = next_hint("оберіть чати у «🎛 Налаштування».")
+    elif not active:
+        hint = next_hint("натисніть «▶️ Старт» — і бот почне реагувати на тривогу.")
+    else:
+        hint = (
+            f"{EMO['star']}  <i>Все налаштовано — бот уже стежить за тривогою.</i>"
+        )
+
+    await msg.answer(f"{text}\n\n{hint}", reply_markup=main_menu_kb(user))
