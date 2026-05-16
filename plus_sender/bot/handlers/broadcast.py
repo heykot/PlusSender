@@ -535,7 +535,12 @@ async def cb_toggle(call: types.CallbackQuery, state: FSMContext) -> None:
         m = pending.get(str(pid))
         if m:
             meta[pid] = m
-        status = "Додано"
+        # Не наслідуємо глобальний дефолт — ставимо явно "не надсилати"
+        # для обох режимів. Користувач сам обере, що саме надсилати,
+        # через «⚙️ Налаштування кожного чату».
+        set_target_type(data, pid, "alert", "none")
+        set_target_type(data, pid, "clear", "none")
+        status = "Додано — налаштуйте у ⚙️"
 
     sync_targets(data, targets, meta)
     save_user(user, data)
