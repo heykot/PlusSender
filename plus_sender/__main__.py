@@ -66,6 +66,37 @@ def _configure_logging() -> None:
     logging.getLogger("telethon").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
+    # ── Прибираємо шум від інтернет-сканерів ──
+    # Порт-сканери, шукачі вразливостей і HTTP/2-проби постійно тицяють
+    # у відкритий webhook-порт. aiohttp коректно відхиляє їх з 400, але
+    # це засмічує errors.log. Лишаємо тільки справжні серверні помилки.
+    class _DropScannerNoise(logging.Filter):
+        _NOISE_KEYWORDS = (
+            "Pause on PRI/Upgrade",          # HTTP/2 проба
+            "BadHttpMessage",                # сміттєвий HTTP
+            "InvalidURLError",               # «GET stager64 HTTP/1.1» тощо
+            "LineTooLong",                   # довгі заголовки-проби
+            "BadStatusLine",                 # криві response/request
+            "Got more than",                 # «more than 8190 bytes when reading»
+            "Unexpected char in url",        # невалідний URL
+        )
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            for kw in self._NOISE_KEYWORDS:
+                if kw in msg:
+                    return False
+            # Те саме, але якщо все сховалось у exc_info
+            if record.exc_info:
+                exc_text = str(record.exc_info[1]) if record.exc_info[1] else ""
+                for kw in self._NOISE_KEYWORDS:
+                    if kw in exc_text:
+                        return False
+            return True
+
+    logging.getLogger("aiohttp.server").addFilter(_DropScannerNoise())
+    logging.getLogger("aiohttp.web").addFilter(_DropScannerNoise())
+
 
 async def _on_alarm_change(mode: str) -> None:
     """Колбек, який викликає alarm-monitor при зміні стану."""
