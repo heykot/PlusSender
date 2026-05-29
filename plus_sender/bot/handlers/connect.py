@@ -217,15 +217,29 @@ async def _begin_credentials(msg: types.Message, state: FSMContext, user: types.
     await state.set_state(ConnectStates.waiting_credentials)
     text = (
         f"{big_step_header(1, 4, 'Ключі API', emoji=EMO['key'])}\n\n"
-        f"Зайдіть на "
-        f"<a href='https://my.telegram.org/auth'>my.telegram.org</a> → "
+        f"Зайдіть на <b>my.telegram.org</b> → "
         f"<b>API Development Tools</b> → створіть додаток.\n"
         f"Скопіюйте <b>api_id</b> (число) та <b>api_hash</b> (довгий рядок) "
         f"і надішліть сюди <u>одним повідомленням</u>.\n\n"
         f"{example_block('12345678 abcdef0123456789abcdef0123456789', '12345678:abcdef0123456789abcdef0123456789')}\n\n"
         f"{tip('формат не важливий — пробіл, двокрапка, новий рядок чи навіть з підписами.')}"
     )
-    await msg.answer(text, reply_markup=cancel_kb(), disable_web_page_preview=True)
+
+    # Inline-кнопка: швидкий перехід на my.telegram.org
+    open_kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(
+            text="🌐  Відкрити my.telegram.org",
+            url="https://my.telegram.org/auth",
+        )],
+    ])
+    await msg.answer(text, reply_markup=open_kb, disable_web_page_preview=True)
+
+    # Окреме коротке повідомлення з reply-клавіатурою «↩️ Скасувати»,
+    # щоб у користувача завжди була під рукою кнопка виходу з майстра.
+    await msg.answer(
+        "<i>👆 Натисніть кнопку щоб відкрити сайт, або вставте ключі сюди.</i>",
+        reply_markup=cancel_kb(),
+    )
 
 
 # ===================== Крок 1: api credentials =====================
