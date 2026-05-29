@@ -20,11 +20,12 @@ log = logging.getLogger(__name__)
 router = Router(name="payment")
 
 # ─────────────────────── Тарифи ───────────────────────
-PLANS_UAH: list[tuple[int, int, str]] = [
-    (30,  300,  "30 днів"),
-    (90,  800,  "90 днів"),
-    (180, 1500, "180 днів"),
-    (365, 2800, "365 днів"),
+# (днів, стара_ціна, нова_ціна, підпис)
+PLANS_UAH: list[tuple[int, int, int, str]] = [
+    (30,  300,  250,  "30 днів"),
+    (90,  800,  700,  "90 днів"),
+    (180, 1500, 1300, "180 днів"),
+    (365, 2800, 2500, "365 днів"),
 ]
 
 
@@ -38,14 +39,15 @@ async def show_payment(msg: types.Message) -> None:
     mono_jar_send_id = (os.getenv("MONO_JAR_SEND_ID") or "").strip()
 
     plans_text = "\n".join(
-        f"  • {label} — <b>{uah} грн</b>"
-        for _, uah, label in PLANS_UAH
+        f"  • {label} —  <s>{old} грн</s>   <b>{new} грн</b>"
+        for _, old, new, label in PLANS_UAH
     )
 
     text = (
         f"{EMO['card']}  <b>Оплата доступу</b>\n"
         f"{DIV}\n"
         f"📅  Поточний доступ:  <b>{access_status_line(access)}</b>\n\n"
+        f"🔥  <b>АКЦІЯ — знижки на всі тарифи!</b>\n\n"
         f"💳  <b>Тарифи (Monobank):</b>\n"
         f"{plans_text}\n\n"
         f"<b>Як оплатити — 3 кроки:</b>\n"
