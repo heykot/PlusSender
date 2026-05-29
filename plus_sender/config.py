@@ -139,6 +139,11 @@ BTN_START = "▶️ Старт"
 BTN_STOP = "⏹ Стоп"
 BTN_PAYMENT = "💳 Оплата"
 BTN_HELP = "ℹ️ Довідка"
+BTN_REFERRAL = "🎁 Запросити друзів"
+
+# ── Реферальна програма ──
+REFERRAL_BONUS_DAYS = 7              # +N днів запрошувачу за кожного, хто купив тариф
+REFERRAL_PAYLOAD_PREFIX = "ref_"     # формат: /start ref_<user_id>
 
 # Ця кнопка змінюється динамічно в keyboards.main_menu_kb (статус)
 BTN_STATUS_PREFIX = "📊 Стан:"

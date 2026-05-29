@@ -694,6 +694,79 @@ def reset_target_config(data: dict, pid: int) -> None:
     clear_target_media(data, pid, "clear")
 
 
+# ===================== Реферальна програма =====================
+def get_referrer(data: dict) -> Optional[int]:
+    """Повертає user_id того, хто запросив цього користувача, або None."""
+    raw = data.get("referrer_id")
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+def set_referrer(user: types.User, referrer_id: int) -> bool:
+    """Зберігає referrer_id у профілі.
+
+    Правила:
+      • Тільки якщо профіль користувача ще НЕ існує (новий користувач).
+      • Заборонено self-referral.
+      • Якщо referrer_id вже встановлений — не перезаписуємо.
+
+    Повертає True якщо зберегли, False якщо проігнорували.
+    """
+    if not referrer_id or referrer_id == user.id:
+        return False
+
+    path = user_file_path(user)
+    if os.path.isfile(path):
+        # Профіль уже існує — не дозволяємо змінювати реферера
+        data = load_user_json(path)
+        if data.get("referrer_id"):
+            return False
+        data["referrer_id"] = int(referrer_id)
+        save_user_json(path, data)
+        return True
+
+    # Новий користувач — створюємо профіль з referrer_id
+    data = {
+        "user_id": user.id,
+        "user_name": user.username,
+        "referrer_id": int(referrer_id),
+    }
+    save_user_json(path, data)
+    return True
+
+
+def is_referral_rewarded(data: dict) -> bool:
+    """Чи отримав запрошувач уже нагороду за цього юзера?"""
+    return bool(data.get("referral_rewarded"))
+
+
+def mark_referral_rewarded(user_id: int) -> bool:
+    """Позначає у профілі запрошеного, що нагорода реферу вже видана.
+    Повертає True якщо знайшли і позначили."""
+    for path in iter_user_files():
+        data = load_user_json(path)
+        if data.get("user_id") == user_id:
+            data["referral_rewarded"] = True
+            save_user_json(path, data)
+            return True
+    return False
+
+
+def count_referrals_for(referrer_id: int) -> tuple[int, int]:
+    """Повертає (всього_запрошено, з_них_купили_тариф) для конкретного запрошувача."""
+    total = 0
+    paid = 0
+    for path in iter_user_files():
+        data = load_user_json(path)
+        if data.get("referrer_id") == referrer_id:
+            total += 1
+            if data.get("referral_rewarded"):
+                paid += 1
+    return total, paid
+
+
 # ===================== Адміни =====================
 def load_admins() -> dict[int, str]:
     if not os.path.isfile(ADMINS_FILE):

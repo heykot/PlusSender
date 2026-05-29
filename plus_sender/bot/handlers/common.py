@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router, types
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 
 from ...config import (
@@ -17,6 +17,7 @@ from ...config import (
     BTN_HELP,
     BTN_PAYMENT,
     BTN_PROFILE,
+    BTN_REFERRAL,
     BTN_START,
     BTN_STOP,
     BTN_SUPPORT,
@@ -24,6 +25,7 @@ from ...config import (
     DIV,
     DIV_THIN,
     EMO,
+    REFERRAL_PAYLOAD_PREFIX,
     TAGLINE,
 )
 from ...storage import (
@@ -33,6 +35,7 @@ from ...storage import (
     has_access,
     load_user,
     refresh_user_meta,
+    set_referrer,
     set_status,
 )
 from ...utils import (
@@ -50,10 +53,35 @@ from ..keyboards import main_menu_kb
 router = Router(name="common")
 
 
+def _parse_referral_payload(payload: str) -> int | None:
+    """Розбирає `ref_<digits>` → user_id, або None."""
+    if not payload:
+        return None
+    payload = payload.strip()
+    if not payload.startswith(REFERRAL_PAYLOAD_PREFIX):
+        return None
+    try:
+        return int(payload[len(REFERRAL_PAYLOAD_PREFIX):])
+    except ValueError:
+        return None
+
+
 @router.message(Command("start", "menu"))
-async def cmd_start(msg: types.Message, state: FSMContext) -> None:
+async def cmd_start(
+    msg: types.Message,
+    state: FSMContext,
+    command: CommandObject | None = None,
+) -> None:
     await state.clear()
     user = msg.from_user
+
+    # ── Реферальна програма: якщо /start ref_<uid> — зберігаємо запрошувача ──
+    just_referred = False
+    if command is not None:
+        ref_id = _parse_referral_payload(command.args or "")
+        if ref_id:
+            just_referred = set_referrer(user, ref_id)
+
     refresh_user_meta(user)
     data = load_user(user)
     active = bool(data.get("status", False))
@@ -62,8 +90,13 @@ async def cmd_start(msg: types.Message, state: FSMContext) -> None:
 
     # ── Тепле привітання ──
     greeting = warm_greeting(user.first_name)
+    ref_badge = (
+        f"\n🎁  <i>Вас запросив друг — коли купите тариф, "
+        f"він отримає бонусні дні.</i>"
+        if just_referred else ""
+    )
     header = (
-        f"{greeting}\n"
+        f"{greeting}{ref_badge}\n"
         f"🤖  <b>{BRAND}</b>  <i>· {TAGLINE}</i>\n"
         f"{DIV}"
     )
@@ -281,6 +314,13 @@ async def menu_payment(msg: types.Message, state: FSMContext) -> None:
     await _interrupt(msg, state)
     from .payment import show_payment
     await show_payment(msg)
+
+
+@router.message(F.text == BTN_REFERRAL)
+async def menu_referral(msg: types.Message, state: FSMContext) -> None:
+    await _interrupt(msg, state)
+    from .referral import show_referral
+    await show_referral(msg)
 
 
 @router.message(F.text == BTN_SUPPORT)

@@ -21,7 +21,7 @@ from typing import Optional
 
 from aiohttp import web
 
-from .config import PROJECT_ROOT
+from .config import PROJECT_ROOT, REFERRAL_BONUS_DAYS
 
 log = logging.getLogger(__name__)
 
@@ -179,7 +179,82 @@ async def mono_webhook_handler(request: web.Request) -> web.Response:
     # ── Сповіщаємо адмінів ──
     await _notify_admins_success(bot, tg_uid, uah_str, label, new_until)
 
+    # ── Реферальна нагорода ──
+    await _reward_referrer_if_any(bot, tg_uid)
+
     return web.Response(status=200)
+
+
+async def _reward_referrer_if_any(bot, buyer_uid: int) -> None:
+    """Якщо в платника є запрошувач і нагорода ще не нарахована —
+    видає +REFERRAL_BONUS_DAYS днів запрошувачу і пише йому в Telegram."""
+    from .storage import (
+        extend_access_days,
+        get_referrer,
+        grant_access_days,
+        is_referral_rewarded,
+        iter_user_files,
+        load_user_json,
+        mark_referral_rewarded,
+    )
+
+    # Знаходимо профіль платника
+    buyer_data: Optional[dict] = None
+    for path in iter_user_files():
+        data = load_user_json(path)
+        if data.get("user_id") == buyer_uid:
+            buyer_data = data
+            break
+    if not buyer_data:
+        return
+
+    referrer_id = get_referrer(buyer_data)
+    if not referrer_id:
+        return
+    if is_referral_rewarded(buyer_data):
+        log.debug("referral: уже нагороджено за uid=%d", buyer_uid)
+        return
+
+    # Видаємо реферу бонусні дні
+    new_until = extend_access_days(referrer_id, REFERRAL_BONUS_DAYS)
+    if new_until is None:
+        new_until = grant_access_days(referrer_id, REFERRAL_BONUS_DAYS)
+    if new_until is None:
+        log.warning(
+            "referral: профіль реферера uid=%d не знайдено — бонус не видано",
+            referrer_id,
+        )
+        return
+
+    # Фіксуємо що нагорода видана (щоб не повторити при наступних оплатах того ж юзера)
+    mark_referral_rewarded(buyer_uid)
+
+    _log_payment(
+        "REFERRAL_REWARD",
+        referrer=referrer_id,
+        buyer=buyer_uid,
+        days=REFERRAL_BONUS_DAYS,
+        new_until=new_until,
+    )
+    log.info(
+        "🎁 Referral reward: referrer=%d (+%d дн.) buyer=%d new_until=%s",
+        referrer_id, REFERRAL_BONUS_DAYS, buyer_uid, new_until,
+    )
+
+    # Повідомляємо запрошувача
+    try:
+        await bot.send_message(
+            referrer_id,
+            f"🎁  <b>Бонус +{REFERRAL_BONUS_DAYS} днів!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Ваш друг купив тариф — дякуємо, що поділились ботом!\n\n"
+            f"📅 Ваш доступ продовжено до:  <b>{new_until}</b>\n\n"
+            f"<i>Запрошуйте більше друзів — отримуйте більше днів. "
+            f"Посилання — у меню «🎁 Запросити друзів».</i>",
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        log.warning("referral: не вдалось повідомити реферера %d: %s", referrer_id, exc)
 
 
 def _days_label(days: int) -> str:
