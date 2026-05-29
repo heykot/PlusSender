@@ -80,7 +80,7 @@ def broadcast_settings_kb(
 
     rows.append([types.InlineKeyboardButton(text="🔍 Пошук чату", callback_data="bset:search")])
     rows.append([types.InlineKeyboardButton(text="⚙️ Налаштування кожного чату", callback_data="bset:chatsettings")])
-    rows.append([types.InlineKeyboardButton(text="⏰ Розклад роботи", callback_data="bset:schedule")])
+    rows.append([types.InlineKeyboardButton(text="⏰ Час роботи", callback_data="bset:schedule")])
     rows.append([
         types.InlineKeyboardButton(text="📊 Поточний стан", callback_data="bset:show"),
         types.InlineKeyboardButton(text="🗑 Скинути чати", callback_data="bset:clear"),
@@ -237,12 +237,12 @@ def schedule_kb(enabled: bool, from_time: str, to_time: str) -> types.InlineKeyb
             callback_data="sched:edit",
         )])
         rows.append([types.InlineKeyboardButton(
-            text="🔴 Вимкнути розклад",
+            text="🔴 Вимкнути час роботи",
             callback_data="sched:disable",
         )])
     else:
         rows.append([types.InlineKeyboardButton(
-            text="🔴 Розклад вимкнено (надсилати завжди)",
+            text="🔴 Час роботи вимкнено (надсилати завжди)",
             callback_data="sched:noop",
         )])
         rows.append([types.InlineKeyboardButton(

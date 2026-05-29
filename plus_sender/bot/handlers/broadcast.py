@@ -1236,18 +1236,18 @@ def _schedule_text(data: dict) -> str:
     sched = get_schedule(data)
     if sched["enabled"]:
         status = (
-            f"🟢  <b>Розклад увімкнено</b>\n"
+            f"🟢  <b>Час роботи увімкнено</b>\n"
             f"   Бот працюватиме лише з <b>{sched['from_time']}</b> до <b>{sched['to_time']}</b>"
         )
         if sched["from_time"] > sched["to_time"]:
             status += "\n   <i>(нічний діапазон — переходить через північ)</i>"
     else:
         status = (
-            "🔴  <b>Розклад вимкнено</b>\n"
+            "🔴  <b>Час роботи вимкнено</b>\n"
             "   Бот працює <b>цілодобово</b>"
         )
     return (
-        f"⏰  <b>Розклад роботи</b>\n{HR}\n\n"
+        f"⏰  <b>Час роботи</b>\n{HR}\n\n"
         f"{status}\n\n"
         f"<i>💡 Поза цим часом тривога/відбій просто пропускаються — повідомлення не надсилаються.</i>\n"
         f"<i>🕐 Час серверний — Київ (UTC+2 / UTC+3 влітку).</i>"
@@ -1282,7 +1282,7 @@ async def cb_sched_back(call: types.CallbackQuery, state: FSMContext) -> None:
     data = load_user(user)
     selected = get_targets(data)
     await call.message.answer(
-        f"{_settings_summary(data)}\n\n<i>Розклад збережено.</i>",
+        f"{_settings_summary(data)}\n\n<i>Час роботи збережено.</i>",
         reply_markup=broadcast_settings_kb(items, selected),
     )
 
@@ -1294,7 +1294,7 @@ async def cb_sched_disable(call: types.CallbackQuery) -> None:
     set_schedule(data, False, sched["from_time"], sched["to_time"])
     save_user(call.from_user, data)
     sched = get_schedule(data)
-    await call.answer("🔴 Розклад вимкнено")
+    await call.answer("🔴 Час роботи вимкнено")
     try:
         await call.message.edit_text(
             _schedule_text(data),
@@ -1380,7 +1380,7 @@ async def sched_to_input(msg: types.Message, state: FSMContext) -> None:
     sched = get_schedule(data)
     night = "  <i>(нічний діапазон)</i>" if from_time > to_time else ""
     await msg.answer(
-        f"✅  <b>Розклад збережено</b>\n\n"
+        f"✅  <b>Час роботи збережено</b>\n\n"
         f"🟢 Розсилка активна: <b>{from_time}</b> — <b>{to_time}</b>{night}\n\n"
         f"Поза цим часом повідомлення надсилатися не будуть.",
         reply_markup=schedule_kb(sched["enabled"], sched["from_time"], sched["to_time"]),

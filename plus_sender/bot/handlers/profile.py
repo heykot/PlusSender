@@ -255,18 +255,25 @@ async def show_profile(msg: types.Message) -> None:
             parts.append(f"↩️ {def_cnt}")
         return "  ".join(parts) if parts else "↩️ дефолт"
 
-    # Розклад
+    # Час роботи — окрема секція
     sched = get_schedule(data)
     if sched["enabled"]:
-        sched_line = f"⏰ <b>{sched['from_time']} – {sched['to_time']}</b>"
+        night = "  <i>(нічний діапазон)</i>" if sched["from_time"] > sched["to_time"] else ""
+        schedule_body = (
+            f"🟢  <b>Увімкнено</b>\n"
+            f"Бот працює:  <b>{sched['from_time']} — {sched['to_time']}</b>{night}\n"
+            f"<i>Поза цим часом тривога/відбій пропускаються.</i>"
+        )
     else:
-        sched_line = "⏰ без обмежень"
+        schedule_body = (
+            f"🔴  <b>Вимкнено</b>\n"
+            f"Бот працює <b>цілодобово</b>."
+        )
 
     settings_body = (
         f"Обрано чатів:  <b>{chats_label}</b>\n"
         f"🚨 Тривога:    {_stat(fwd_a, txt_a, n_targets)}\n"
-        f"🟢 Відбій:     {_stat(fwd_c, txt_c, n_targets)}\n"
-        f"Розклад:       {sched_line}"
+        f"🟢 Відбій:     {_stat(fwd_c, txt_c, n_targets)}"
     )
 
     # ── Детально по чатах ──
@@ -279,6 +286,7 @@ async def show_profile(msg: types.Message) -> None:
             ("Акаунт", account_body),
             ("Сесія Telegram", session_body),
             ("Налаштування розсилки", settings_body),
+            ("⏰ Час роботи", schedule_body),
             ("Що саме надсилається у кожен чат", chats_detail),
         ],
     )
