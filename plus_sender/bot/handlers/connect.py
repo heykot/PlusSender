@@ -115,6 +115,42 @@ def _normalize_code(raw: str) -> str:
     return re.sub(r"\D", "", raw or "")
 
 
+def _sent_code_where(sent_obj) -> str:
+    """Дружній опис того, КУДИ Telegram надіслав код."""
+    type_name = type(sent_obj.type).__name__ if sent_obj.type else ""
+    return {
+        "SentCodeTypeApp":
+            "📱 <b>у застосунок Telegram</b>\n"
+            "   Шукайте чат <b>«Telegram»</b> (синя галочка, аватар з літачком).",
+        "SentCodeTypeSms":
+            "💬 <b>SMS-повідомленням</b> на ваш номер.\n"
+            "   Може йти до хвилини.",
+        "SentCodeTypeCall":
+            "📞 <b>голосовим дзвінком</b> — підніміть слухавку, бот продиктує код.",
+        "SentCodeTypeFlashCall":
+            "📞 <b>коротким дзвінком</b> — введіть <b>останні цифри</b> номера, що подзвонив.",
+        "SentCodeTypeMissedCall":
+            "📞 <b>пропущеним дзвінком</b> — введіть <b>останні цифри</b> номера, що подзвонив.",
+        "SentCodeTypeEmailCode":
+            "✉️ <b>листом</b> на ваш Telegram-email.",
+    }.get(type_name, "у Telegram (місце невідоме — перевірте додаток і SMS)")
+
+
+def _resend_keyboard(can_resend_sms: bool) -> Optional[types.InlineKeyboardMarkup]:
+    """Inline-клавіатура з кнопкою повторного надсилання."""
+    rows: list[list[types.InlineKeyboardButton]] = []
+    if can_resend_sms:
+        rows.append([types.InlineKeyboardButton(
+            text="🔁  Надіслати код через SMS",
+            callback_data="connect:resend_sms",
+        )])
+    rows.append([types.InlineKeyboardButton(
+        text="↩️  Скасувати підключення",
+        callback_data="connect:cancel",
+    )])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 # ===================== Точка входу =====================
 @router.message(Command("connect"))
 @router.message(F.text == BTN_CONNECT)
@@ -200,10 +236,75 @@ async def replace_existing(call: types.CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(F.data == "connect:cancel")
 async def cancel_intro(call: types.CallbackQuery, state: FSMContext) -> None:
+    # Якщо є активний Telethon-клієнт (з кроку телефону) — закриваємо
+    await _disconnect_active(call.from_user.id)
     await state.clear()
     await call.answer("Скасовано")
-    await call.message.edit_reply_markup(reply_markup=None)
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await call.message.answer("❎ Скасовано.", reply_markup=main_menu_kb(call.from_user))
+
+
+# ===================== Повторне надсилання коду через SMS =====================
+@router.callback_query(F.data == "connect:resend_sms", ConnectStates.waiting_code)
+async def resend_sms_code(call: types.CallbackQuery, state: FSMContext) -> None:
+    client = _active_clients.get(call.from_user.id)
+    if not client:
+        await call.answer(
+            "Сесія втрачена — натисніть «🔌 Підключити» і почніть заново.",
+            show_alert=True,
+        )
+        return
+
+    fsm_data = await state.get_data()
+    phone = fsm_data.get("phone")
+    if not phone:
+        await call.answer("Не знаю вашого номера. Почніть заново.", show_alert=True)
+        return
+
+    await call.answer("Просимо Telegram надіслати SMS…")
+
+    try:
+        sent = await client.send_code_request(phone, force_sms=True)
+    except Exception as exc:
+        log.warning("connect: resend SMS failed: %s", exc)
+        await call.message.answer(
+            soft_error(
+                "Не вдалось замовити SMS",
+                body=(
+                    f"<code>{h(str(exc))}</code>\n\n"
+                    "<i>Іноді Telegram блокує повторні запити на короткий час. "
+                    "Зачекайте 1–2 хвилини і спробуйте ще раз. "
+                    "Або скасуйте і почніть з «🔌 Підключити».</i>"
+                ),
+                retry=False,
+            )
+        )
+        return
+
+    # Оновлюємо phone_code_hash — старий більше не дійсний
+    await state.update_data(phone_code_hash=sent.phone_code_hash)
+
+    where = _sent_code_where(sent)
+    log.info(
+        "connect: resend SMS ok phone=%s type=%s",
+        phone,
+        type(sent.type).__name__ if sent.type else "?",
+    )
+
+    # Чи лишилась можливість попросити ще раз?
+    can_resend_again = sent.next_type is not None
+
+    await call.message.answer(
+        f"📨  <b>Код надіслано повторно.</b>\n\n"
+        f"<b>Куди:</b>\n   {where}\n\n"
+        f"<i>Введіть отриманий код одним повідомленням. "
+        f"Старий код більше не діє.</i>",
+        reply_markup=_resend_keyboard(can_resend_again),
+        disable_web_page_preview=True,
+    )
 
 
 @router.callback_query(F.data == "connect:start")
@@ -360,12 +461,32 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
     await state.update_data(phone=phone, phone_code_hash=sent.phone_code_hash)
     await state.set_state(ConnectStates.waiting_code)
 
+    where = _sent_code_where(sent)
+    # SMS можна попросити повторно тільки якщо Telegram дозволяє наступний тип
+    can_resend_sms = sent.next_type is not None
+
+    log.info(
+        "connect: code requested phone=%s type=%s next=%s timeout=%s",
+        phone,
+        type(sent.type).__name__ if sent.type else "?",
+        type(sent.next_type).__name__ if sent.next_type else "—",
+        getattr(sent, "timeout", "?"),
+    )
+
     await msg.answer(
-        f"{EMO['ok']}  <b>Номер прийнято.</b>  Telegram уже надіслав код у ваш акаунт.\n\n"
+        f"{EMO['ok']}  <b>Номер прийнято.</b>\n\n"
         f"{big_step_header(3, 4, 'Код підтвердження', emoji=EMO['code'])}\n\n"
-        f"Введіть код, який ви щойно отримали від Telegram.\n\n"
+        f"📨  <b>Куди надіслано код:</b>\n   {where}\n\n"
+        f"Введіть код одним повідомленням.\n\n"
         f"{example_block('1 2 3 4 5', '12345', '1-2-3-4-5')}\n\n"
-        f"{tip('пробіли, дужки і тире — не проблема. Я витягну тільки цифри.')}",
+        f"{tip('пробіли, дужки і тире — не проблема, лишаються тільки цифри.')}\n\n"
+        f"<i>Якщо коду немає протягом хвилини — натисніть «🔁 Надіслати код через SMS» нижче.</i>",
+        reply_markup=_resend_keyboard(can_resend_sms),
+        disable_web_page_preview=True,
+    )
+    # Окремо — reply-клавіатура з «Скасувати» (щоб була завжди під рукою)
+    await msg.answer(
+        "<i>👆 Очікую код від Telegram.</i>",
         reply_markup=cancel_kb(),
     )
 
