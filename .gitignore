@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 *.session
 *.session-journal
+sad.py
+.DS_Store

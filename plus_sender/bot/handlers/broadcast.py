@@ -191,43 +191,51 @@ async def _fetch_dialogs(
         return [], err
     items: list[dict] = []
     try:
-        async with client:
-            if not await client.is_user_authorized():
-                return [], f"{EMO['err']} Сесія не авторизована. Виконайте «🔌 Підключення»."
-            if query is None:
-                async for d in client.iter_dialogs(limit=30):
-                    ent = d.entity
+        # ВАЖЛИВО: connect(), а не `async with client:` — контекст-менеджер Telethon
+        # викликає client.start(), який на неавторизованій сесії намагається
+        # читати номер телефону зі stdin → EOFError/зависання на сервері.
+        await client.connect()
+        if not await client.is_user_authorized():
+            return [], f"{EMO['err']} Сесія не авторизована. Виконайте «🔌 Підключення»."
+        if query is None:
+            async for d in client.iter_dialogs(limit=30):
+                ent = d.entity
+                items.append({
+                    "title": d.name or "—",
+                    "pid": tl_utils.get_peer_id(ent),
+                    "username": getattr(ent, "username", None),
+                    "kind": ent.__class__.__name__,
+                })
+        else:
+            q = query.strip().lower()
+            as_id: Optional[int] = None
+            if q.lstrip("-").isdigit():
+                try:
+                    as_id = int(q)
+                except ValueError:
+                    pass
+            async for d in client.iter_dialogs(limit=None):
+                ent = d.entity
+                title = (d.name or "").lower()
+                uname = (getattr(ent, "username", "") or "").lower()
+                pid = tl_utils.get_peer_id(ent)
+                if q in title or (uname and q in uname) or (as_id is not None and pid == as_id):
                     items.append({
                         "title": d.name or "—",
-                        "pid": tl_utils.get_peer_id(ent),
+                        "pid": pid,
                         "username": getattr(ent, "username", None),
                         "kind": ent.__class__.__name__,
                     })
-            else:
-                q = query.strip().lower()
-                as_id: Optional[int] = None
-                if q.lstrip("-").isdigit():
-                    try:
-                        as_id = int(q)
-                    except ValueError:
-                        pass
-                async for d in client.iter_dialogs(limit=None):
-                    ent = d.entity
-                    title = (d.name or "").lower()
-                    uname = (getattr(ent, "username", "") or "").lower()
-                    pid = tl_utils.get_peer_id(ent)
-                    if q in title or (uname and q in uname) or (as_id is not None and pid == as_id):
-                        items.append({
-                            "title": d.name or "—",
-                            "pid": pid,
-                            "username": getattr(ent, "username", None),
-                            "kind": ent.__class__.__name__,
-                        })
-                        if len(items) >= 60:
-                            break
+                    if len(items) >= 60:
+                        break
         return items, None
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 # ─────────────────────── Підрахунок кружків ───────────────────────
