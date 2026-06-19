@@ -8,6 +8,7 @@ class ConnectStates(StatesGroup):
     waiting_phone = State()         # +380...
     waiting_code = State()          # код з Telegram (підтримка пробілів/тире)
     waiting_password = State()      # 2FA-пароль
+    waiting_qr = State()            # очікування сканування QR-коду
 
 
 class BroadcastStates(StatesGroup):

@@ -293,6 +293,42 @@ def connect_intro_kb() -> types.InlineKeyboardMarkup:
     )
 
 
+def connect_method_kb() -> types.InlineKeyboardMarkup:
+    """Вибір способу входу: код у застосунок або QR-код."""
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(
+                text="🔳 Увійти через QR-код (рекомендовано)",
+                callback_data="connect:method_qr",
+            )],
+            [types.InlineKeyboardButton(
+                text="🔢 Увійти через код / SMS",
+                callback_data="connect:method_code",
+            )],
+            [types.InlineKeyboardButton(
+                text="↩️ Скасувати",
+                callback_data="connect:cancel",
+            )],
+        ]
+    )
+
+
+def connect_qr_kb(login_url: str) -> types.InlineKeyboardMarkup:
+    """Кнопка-посилання для входу по тапу (на тому ж телефоні) + скасування."""
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(
+                text="✅ Підтвердити вхід у Telegram",
+                url=login_url,
+            )],
+            [types.InlineKeyboardButton(
+                text="↩️ Скасувати",
+                callback_data="connect:cancel",
+            )],
+        ]
+    )
+
+
 def connect_post_success_kb() -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[

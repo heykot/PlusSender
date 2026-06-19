@@ -3,3 +3,4 @@ telethon>=1.43,<2
 aiohttp>=3.9,<4
 aiohttp-socks>=0.8,<1
 python-dotenv>=1,<2
+segno>=1.6,<2

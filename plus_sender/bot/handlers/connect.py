@@ -10,9 +10,12 @@ UX-покращення відносно старої версії:
 """
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 import os
 import re
+import time
 from typing import Optional
 
 from aiogram import F, Router, types
@@ -55,7 +58,9 @@ from ..keyboards import (
     cancel_kb,
     connect_existing_session_kb,
     connect_intro_kb,
+    connect_method_kb,
     connect_post_success_kb,
+    connect_qr_kb,
     main_menu_kb,
 )
 from ..states import ConnectStates
@@ -67,9 +72,23 @@ router = Router(name="connect")
 # Ключ: user_id, значення: TelegramClient.
 _active_clients: dict[int, TelegramClient] = {}
 
+# Активні QR-логіни та фонові задачі очікування сканування.
+_qr_logins: dict[int, object] = {}        # user_id -> QRLogin
+_qr_tasks: dict[int, asyncio.Task] = {}   # user_id -> очікувач
+
+# Скільки всього чекаємо на сканування QR (сек), і час життя одного токена.
+QR_TOTAL_TIMEOUT = 300
+QR_TOKEN_WAIT = 25
+
 
 # ===================== Утиліти =====================
 async def _disconnect_active(user_id: int) -> None:
+    # Спершу гасимо фоновий очікувач QR, якщо є
+    task = _qr_tasks.pop(user_id, None)
+    if task and not task.done():
+        task.cancel()
+    _qr_logins.pop(user_id, None)
+
     client = _active_clients.pop(user_id, None)
     if not client:
         return
@@ -77,6 +96,20 @@ async def _disconnect_active(user_id: int) -> None:
         await client.disconnect()
     except Exception:
         pass
+
+
+def _qr_png_bytes(url: str) -> Optional[bytes]:
+    """Генерує PNG з QR-кодом. None — якщо segno не встановлено."""
+    try:
+        import segno
+    except Exception:
+        return None
+    try:
+        buf = io.BytesIO()
+        segno.make(url, error="m").save(buf, kind="png", scale=8, border=2)
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 def _parse_credentials(raw: str) -> Optional[tuple[int, str]]:
@@ -380,17 +413,262 @@ async def step_credentials(msg: types.Message, state: FSMContext) -> None:
     )
     save_user(msg.from_user, data)
     await state.update_data(api_id=api_id, api_hash=api_hash)
-    await state.set_state(ConnectStates.waiting_phone)
+    # Стан скидаємо — далі вибір способу йде через inline-кнопки
+    await state.set_state(None)
 
     await msg.answer(
         f"{EMO['ok']}  <b>Чудово!</b>  Ключі прийнято: "
         f"<code>api_id={api_id}</code>\n\n"
-        f"{big_step_header(2, 4, 'Номер телефону', emoji=EMO['phone'])}\n\n"
+        f"{big_step_header(2, 3, 'Спосіб входу', emoji=EMO['key'])}\n\n"
+        f"<b>🔳 QR-код</b> — найнадійніше. Відкриваєте свій Telegram, "
+        f"тапаєте по кнопці (або скануєте QR) — і все.\n"
+        f"<i>Працює навіть коли код входу не приходить.</i>\n\n"
+        f"<b>🔢 Код / SMS</b> — класичний спосіб: Telegram надішле код у застосунок.\n\n"
+        f"{tip('якщо код раніше не приходив — обирайте QR.')}",
+        reply_markup=connect_method_kb(),
+    )
+
+
+# ===================== Вибір способу входу =====================
+_QR_CAPTION = (
+    "🔳  <b>Вхід через QR-код</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "<b>Спосіб 1 — з цього ж телефону:</b>\n"
+    "натисніть кнопку <b>«✅ Підтвердити вхід»</b> нижче — відкриється "
+    "ваш Telegram, лишиться підтвердити вхід.\n\n"
+    "<b>Спосіб 2 — з іншого пристрою:</b>\n"
+    "Telegram → <b>Налаштування → Пристрої → Підключити пристрій</b> → "
+    "наведіть камеру на цей QR.\n\n"
+    "<i>Код діє близько хвилини й оновлюється сам, поки ви не підтвердите.</i>"
+)
+
+_QR_2FA_PROMPT = (
+    "🔐  <b>Потрібен пароль 2FA</b>\n"
+    "На вашому акаунті ввімкнено двофакторну автентифікацію.\n"
+    "Введіть свій <b>cloud password</b> від Telegram <u>точно як є</u>, "
+    "одним повідомленням.\n\n"
+    "<i>Повідомлення з паролем буде видалено одразу після отримання.</i>"
+)
+
+
+@router.callback_query(F.data == "connect:method_code")
+async def method_code(call: types.CallbackQuery, state: FSMContext) -> None:
+    await call.answer()
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await state.set_state(ConnectStates.waiting_phone)
+    await call.message.answer(
+        f"{big_step_header(2, 3, 'Номер телефону', emoji=EMO['phone'])}\n\n"
         f"Надішліть номер вашого Telegram у міжнародному форматі.\n\n"
         f"{example_block('+380501234567', '+380 50 123 45 67')}\n\n"
         f"{tip('пробіли і дужки приберу автоматично — головне щоб був код країни.')}",
         reply_markup=cancel_kb(),
     )
+
+
+@router.callback_query(F.data == "connect:method_qr")
+async def method_qr(call: types.CallbackQuery, state: FSMContext) -> None:
+    await call.answer("Готую QR-код…")
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await _start_qr_login(call.message, state, call.from_user)
+
+
+async def _start_qr_login(msg: types.Message, state: FSMContext, user: types.User) -> None:
+    fsm_data = await state.get_data()
+    try:
+        api_id = int(fsm_data["api_id"])
+        api_hash = str(fsm_data["api_hash"])
+    except (KeyError, ValueError, TypeError):
+        await msg.answer(
+            soft_error(
+                "Загубилися ключі API",
+                body=f"Почніть заново через «{h(BTN_CONNECT)}».",
+                retry=False,
+            )
+        )
+        await state.clear()
+        return
+
+    # Закриваємо попередній клієнт, якщо лишився
+    await _disconnect_active(user.id)
+
+    client = TelegramClient(session_path(user), api_id, api_hash)
+    try:
+        await client.connect()
+    except Exception as e:
+        await msg.answer(
+            soft_error(
+                "Не вдалося з'єднатися з Telegram",
+                body=f"<code>{h(str(e))}</code>\n\n"
+                     f"<i>Перевірте інтернет і повторіть «🔌 Підключити».</i>",
+                retry=False,
+            )
+        )
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return
+
+    # Якщо сесія раптом уже авторизована — нічого питати не треба
+    try:
+        if await client.is_user_authorized():
+            _active_clients[user.id] = client
+            await _finish_success_core(msg.bot, msg.chat.id, user, state)
+            return
+    except Exception:
+        pass
+
+    try:
+        qr = await client.qr_login()
+    except SessionPasswordNeededError:
+        _active_clients[user.id] = client
+        await state.set_state(ConnectStates.waiting_password)
+        await msg.answer(_QR_2FA_PROMPT, reply_markup=cancel_kb())
+        return
+    except Exception as e:
+        await msg.answer(
+            soft_error(
+                "Не вдалося створити QR-код",
+                body=f"<code>{h(str(e))}</code>",
+                retry=False,
+            )
+        )
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return
+
+    _active_clients[user.id] = client
+    _qr_logins[user.id] = qr
+    await state.set_state(ConnectStates.waiting_qr)
+
+    png = _qr_png_bytes(qr.url)
+    kb = connect_qr_kb(qr.url)
+    if png:
+        sent = await msg.answer_photo(
+            types.BufferedInputFile(png, filename="login_qr.png"),
+            caption=_QR_CAPTION,
+            reply_markup=kb,
+        )
+    else:
+        # segno не встановлено — даємо тільки кнопку-тап (цього достатньо на телефоні)
+        sent = await msg.answer(
+            _QR_CAPTION + "\n\n<i>(QR-картинку не згенеровано — користуйтесь кнопкою нижче.)</i>",
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+    await msg.answer(
+        "<i>👆 Очікую підтвердження входу…</i>",
+        reply_markup=cancel_kb(),
+    )
+
+    task = asyncio.create_task(
+        _qr_waiter(msg.bot, sent.chat.id, sent.message_id, user, state, bool(png))
+    )
+    _qr_tasks[user.id] = task
+
+
+async def _refresh_qr_message(
+    bot, chat_id: int, message_id: int, url: str, is_photo: bool
+) -> None:
+    """Оновлює повідомлення з QR після перевипуску токена."""
+    kb = connect_qr_kb(url)
+    if is_photo:
+        png = _qr_png_bytes(url)
+        if png:
+            try:
+                await bot.edit_message_media(
+                    media=types.InputMediaPhoto(
+                        media=types.BufferedInputFile(png, filename="login_qr.png"),
+                        caption=_QR_CAPTION,
+                    ),
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reply_markup=kb,
+                )
+                return
+            except Exception:
+                pass
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=message_id, reply_markup=kb
+        )
+    except Exception:
+        pass
+
+
+async def _qr_waiter(
+    bot, chat_id: int, message_id: int, user: types.User, state: FSMContext, is_photo: bool
+) -> None:
+    """Фоново чекає сканування QR, оновлюючи токен, поки не сплине ліміт."""
+    user_id = user.id
+    qr = _qr_logins.get(user_id)
+    if qr is None:
+        return
+    deadline = time.monotonic() + QR_TOTAL_TIMEOUT
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                await bot.send_message(
+                    chat_id,
+                    "⌛  <b>Час очікування вийшов.</b>\n"
+                    f"<i>Спробуйте ще раз через «{h(BTN_CONNECT)}».</i>",
+                    reply_markup=main_menu_kb(user),
+                )
+                await _disconnect_active(user_id)
+                await state.clear()
+                return
+
+            try:
+                await qr.wait(timeout=min(QR_TOKEN_WAIT, remaining))
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                # Токен застарів — перевипускаємо й оновлюємо повідомлення
+                try:
+                    await qr.recreate()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    continue
+                await _refresh_qr_message(bot, chat_id, message_id, qr.url, is_photo)
+                continue
+            except SessionPasswordNeededError:
+                await state.set_state(ConnectStates.waiting_password)
+                await bot.send_message(chat_id, _QR_2FA_PROMPT, reply_markup=cancel_kb())
+                _qr_tasks.pop(user_id, None)
+                _qr_logins.pop(user_id, None)
+                return
+            except Exception as e:
+                log.warning("connect: qr wait failed: %s", e)
+                await bot.send_message(
+                    chat_id,
+                    soft_error(
+                        "Не вдалося завершити вхід по QR",
+                        body=f"<code>{h(str(e))}</code>",
+                        retry=False,
+                    ),
+                )
+                await _disconnect_active(user_id)
+                await state.clear()
+                return
+            else:
+                # Успішно авторизовано
+                _qr_tasks.pop(user_id, None)
+                _qr_logins.pop(user_id, None)
+                await _finish_success_core(bot, chat_id, user, state)
+                return
+    except asyncio.CancelledError:
+        # Скасування — клієнт закриє ініціатор (_disconnect_active)
+        pass
 
 
 # ===================== Крок 2: телефон =====================
@@ -475,7 +753,7 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
 
     await msg.answer(
         f"{EMO['ok']}  <b>Номер прийнято.</b>\n\n"
-        f"{big_step_header(3, 4, 'Код підтвердження', emoji=EMO['code'])}\n\n"
+        f"{big_step_header(3, 3, 'Код підтвердження', emoji=EMO['code'])}\n\n"
         f"📨  <b>Куди надіслано код:</b>\n   {where}\n\n"
         f"Введіть код одним повідомленням.\n\n"
         f"{example_block('1 2 3 4 5', '12345', '1-2-3-4-5')}\n\n"
@@ -607,8 +885,10 @@ async def step_password(msg: types.Message, state: FSMContext) -> None:
 
 
 # ===================== Завершення =====================
-async def _finish_success(msg: types.Message, state: FSMContext) -> None:
-    await _disconnect_active(msg.from_user.id)
+async def _finish_success_core(
+    bot, chat_id: int, user: types.User, state: FSMContext
+) -> None:
+    await _disconnect_active(user.id)
     await state.clear()
 
     success_text = (
@@ -622,12 +902,17 @@ async def _finish_success(msg: types.Message, state: FSMContext) -> None:
         f"{EMO['warn']}  <i>Якщо бот не реагує — перевірте, чи активний "
         f"доступ у «💳 Оплата».</i>"
     )
-    await msg.answer(success_text, reply_markup=main_menu_kb(msg.from_user))
-    await msg.answer(
+    await bot.send_message(chat_id, success_text, reply_markup=main_menu_kb(user))
+    await bot.send_message(
+        chat_id,
         f"{EMO['bolt']}  <b>Хочете налаштувати розсилку зараз?</b>\n"
         f"<i>Це найцікавіша частина — обираємо чати та що надсилати.</i>",
         reply_markup=connect_post_success_kb(),
     )
+
+
+async def _finish_success(msg: types.Message, state: FSMContext) -> None:
+    await _finish_success_core(msg.bot, msg.chat.id, msg.from_user, state)
 
 
 # ===================== Швидкі переходи після успіху =====================
