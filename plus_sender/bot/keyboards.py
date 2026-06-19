@@ -298,12 +298,12 @@ def connect_method_kb() -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(
-                text="🔳 Увійти через QR-код (рекомендовано)",
-                callback_data="connect:method_qr",
+                text="🔢 Код / SMS (один телефон)",
+                callback_data="connect:method_code",
             )],
             [types.InlineKeyboardButton(
-                text="🔢 Увійти через код / SMS",
-                callback_data="connect:method_code",
+                text="🔳 QR-код (є другий пристрій)",
+                callback_data="connect:method_qr",
             )],
             [types.InlineKeyboardButton(
                 text="↩️ Скасувати",
