@@ -757,8 +757,8 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
         f"{big_step_header(3, 3, 'Код підтвердження', emoji=EMO['code'])}\n\n"
         f"📨  <b>Куди надіслано код:</b>\n   {where}\n\n"
         f"Введіть код одним повідомленням.\n\n"
-        f"{example_block('1 2 3 4 5', '12345', '1-2-3-4-5')}\n\n"
-        f"{tip('пробіли, дужки і тире — не проблема, лишаються тільки цифри.')}\n\n"
+        f"{example_block('1 2 3 4 5', '1-2-3-4-5')}\n\n"
+        f"{tip('обовʼязково через пробіл або дефіс.')}\n\n"
         f"<i>Якщо коду немає протягом хвилини — натисніть «🔁 Надіслати код через SMS» нижче.</i>",
         reply_markup=_resend_keyboard(can_resend_sms),
         disable_web_page_preview=True,
