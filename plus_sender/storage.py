@@ -833,6 +833,36 @@ def record_forward_used(json_path: str, pid: int, mode: str, msg_id: int, total:
     save_user_json(json_path, fresh)
 
 
+def record_target_migration(json_path: str, old_pid: int, new_pid: int, title: str) -> None:
+    """Позначає, що звичайну групу перетворено на супергрупу (новий ID).
+    Автоматично туди НЕ шлемо — користувач підтверджує перенесення сам."""
+    fresh = load_user_json(json_path)
+    tms = get_target_messages(fresh)
+    if old_pid not in tms and old_pid not in get_targets(fresh):
+        return
+    item = dict(tms.get(old_pid) or {})
+    item["migrated_to"] = int(new_pid)
+    item["migrated_title"] = str(title)
+    tms[old_pid] = item
+    set_target_messages(fresh, tms)
+    save_user_json(json_path, fresh)
+
+
+def move_target(data: dict, old_pid: int, new_pid: int, title: str) -> None:
+    """Переносить чат і всі його налаштування на новий ID (після міграції в супергрупу)."""
+    targets = [new_pid if p == old_pid else p for p in get_targets(data)]
+    meta = get_targets_meta(data)
+    meta.pop(old_pid, None)
+    meta[new_pid] = {"title": title, "username": None, "kind": "Channel"}
+    tms = get_target_messages(data)
+    item = dict(tms.pop(old_pid, None) or {})
+    item.pop("migrated_to", None)
+    item.pop("migrated_title", None)
+    tms[new_pid] = item
+    set_target_messages(data, tms)
+    sync_targets(data, targets, meta)
+
+
 def reset_target_config(data: dict, pid: int) -> None:
     """Повністю скидає індивідуальні налаштування чату."""
     tms = get_target_messages(data)

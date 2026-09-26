@@ -24,6 +24,7 @@ from .storage import (
     access_days_left,
     get_access_until,
     get_target_forward_source,
+    get_target_messages,
     get_targets,
     get_targets_meta,
     iter_user_files,
@@ -96,10 +97,14 @@ def _problem_text(data: dict, pid: int, code: str, mode: str) -> Optional[str]:
     chat = f"«{h(title)}»"
     if code in TEMPORARY:
         return None
+    if code == "migrated":
+        new = (get_target_messages(data).get(pid) or {}).get("migrated_title") or "нова супергрупа"
+        return (f"{chat} перетворено на супергрупу «{h(new)}» — старий чат більше не працює, "
+                f"налаштування треба перенести (кнопка «🔁» у «{BTN_BROADCAST}»)")
     if code in NO_RIGHTS:
         return f"{chat} — немає права писати (або надсилати медіа) в цей чат"
     if code in UNREACHABLE:
-        return f"{chat} — чат недоступний: вас видалили з нього або його видалено"
+        return f"{chat} — чат недоступний: ви вийшли з нього, вас видалили або чат видалено"
     if code in ("src_empty", "no_media_in_src"):
         src = get_target_forward_source(data, pid, mode)
         where = f" «{h(src['title'])}»" if src else ""
@@ -109,6 +114,18 @@ def _problem_text(data: dict, pid: int, code: str, mode: str) -> Optional[str]:
     if code == "SlowModeWaitError":
         return f"{chat} — у чаті ввімкнено повільний режим"
     return f"{chat} — не вдалося надіслати ({h(code)})"
+
+
+def migration_kb(data: dict, pids: list) -> Optional[types.InlineKeyboardMarkup]:
+    """Кнопки «перенести налаштування в супергрупу» для перетворених груп."""
+    rows = []
+    for pid in pids:
+        item = get_target_messages(data).get(pid) or {}
+        if item.get("migrated_to"):
+            old = str((get_targets_meta(data).get(pid) or {}).get("title") or pid)
+            rows.append([I(text=f"🔁 «{old[:18]}» → «{str(item.get('migrated_title'))[:18]}»",
+                           callback_data=f"st:mig:{pid}")])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 _last_notified: dict[int, tuple[tuple, datetime]] = {}
@@ -139,7 +156,7 @@ async def notify_broadcast_problems(bot, mode: str, problems: dict[str, list[tup
                 + "\n".join(f"• {x}" for x in lines)
                 + f"\n\n<i>Перевірте «{BTN_BROADCAST}».</i>"
             )
-            kb = None
+            kb = migration_kb(data, [pid for pid, code in items if code == "migrated"])
 
         signature = tuple(sorted((str(p), c) for p, c in items))
         prev = _last_notified.get(uid)

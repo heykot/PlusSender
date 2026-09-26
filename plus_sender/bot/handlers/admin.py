@@ -32,7 +32,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter, Command
 from aiogram.fsm.context import FSMContext
 
-from ... import alarm, sender
+from ... import alarm, notifier, sender
 from ...config import HR, PROJECT_ROOT, REFERRAL_BONUS_DAYS
 from ...storage import (
     access_days_left,
@@ -41,6 +41,7 @@ from ...storage import (
     extend_access_days,
     get_access_until,
     get_referrer,
+    get_target_messages,
     get_targets,
     is_admin,
     load_admins,
@@ -139,10 +140,27 @@ def _issues(uid: int, data: dict) -> list[str]:
             if _is_unset(data, pid, mode):
                 out.append(f"⚠️ «{_target_title(data, pid)}» не налаштовано")
                 break
+        mig = (get_target_messages(data).get(pid) or {})
+        if mig.get("migrated_to"):
+            out.append(f"⚠️ «{_target_title(data, pid)}» перетворено на супергрупу «{mig.get('migrated_title')}»")
     if _days_left(data) is None:
         out.append("❌ Немає активного доступу")
     if not data.get("status"):
         out.append("⏸ Авто-розсилку вимкнено")
+    return out
+
+
+def _send_problems(uid: int, data: dict) -> list[str]:
+    """Що не надіслалось під час останньої спроби (розсилка або тест) — людською мовою."""
+    mode = sender.LAST_PROBLEM_MODE.get(str(uid), "alert")
+    out = []
+    for pid, code in sender.LAST_PROBLEMS.get(str(uid), []):
+        if pid is None:
+            out.append("бот втратив доступ до Telegram — сесію завершено" if code in notifier.SESSION_CODES
+                       else f"помилка акаунта ({code})")
+        else:
+            text = notifier._problem_text(data, pid, code, mode)
+            out.append(re.sub(r"<[^>]+>", "", text) if text else f"«{_target_title(data, pid)}» — тимчасова помилка ({code})")
     return out
 
 
@@ -380,8 +398,13 @@ def _card(uid: int, data: dict) -> tuple[str, types.InlineKeyboardMarkup]:
         )
 
     issues = _issues(uid, data)
-    lines.append("\n🩺 <b>Стан:</b> " + ("все гаразд, розсилка працюватиме" if not issues else ""))
+    failed = _send_problems(uid, data)
+    ok_state = not issues and not failed
+    lines.append("\n🩺 <b>Стан:</b> " + ("все гаразд, розсилка працюватиме" if ok_state else ""))
     lines += [f"   {h(x)}" for x in issues]
+    if failed:
+        lines.append("   ❌ Під час останньої спроби не надіслано:")
+        lines += [f"      • {h(x)}" for x in failed]
 
     run = sender.LAST_RUN.get("results", {}).get(str(uid)) if sender.LAST_RUN else None
     if run:
@@ -540,11 +563,24 @@ async def cb_test_ok(call: types.CallbackQuery) -> None:
     await call.answer("Надсилаю…")
     _audit(call.from_user, "test", uid, mode=mode)
     _, ok, reason = await sender._send_for_user(user_file_path_for_id(uid), mode)
-    result = "✅ Надіслано" + (f" ({reason})" if reason else "") if ok else f"❌ Не надіслано: {reason}"
     data = load_all_users().get(uid)
-    if data:
-        text, kb = _card(uid, data)
-        await _render(call, f"🧪 <b>Тест:</b> {h(result)}\n\n{text}", kb)
+    if not data:
+        return
+    failed = _send_problems(uid, data)
+    if ok:
+        result = "⚠️ Надіслано частково" if failed else "✅ Надіслано"
+    else:
+        # Причини без технічних кодів: вимкнено, немає доступу, поза часом роботи…
+        pretty = {"status off": "авто-розсилку вимкнено", "no targets": "не обрано чатів",
+                  "no access": "немає доступу", "session not authorized": "сесію Telegram завершено"}
+        if reason and reason.startswith("expired"):
+            reason = "доступ закінчився"
+        elif reason and reason.startswith("out of schedule"):
+            reason = "зараз поза часом роботи користувача"
+        result = "❌ Не надіслано" + ("" if failed else f": {pretty.get(reason, reason)}")
+    details = "".join(f"\n   • {h(x)}" for x in failed)
+    text, kb = _card(uid, data)
+    await _render(call, f"🧪 <b>Тест:</b> {h(result)}{details}\n\n{text}", kb)
 
 
 @router.callback_query(F.data.startswith("ad:msg:"))

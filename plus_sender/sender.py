@@ -15,6 +15,7 @@ from telethon.errors import RPCError
 from telethon.tl.types import (
     DocumentAttributeAudio,
     DocumentAttributeVideo,
+    PeerChannel,
 )
 
 from .config import SESSIONS_DIR, USERS_DIR
@@ -34,6 +35,7 @@ from .storage import (
     mark_target_forward_used,
     message_for_target,
     record_forward_used,
+    record_target_migration,
 )
 
 log = logging.getLogger(__name__)
@@ -125,6 +127,7 @@ def _pick_round_robin(msgs: list, used_ids: list[int]) -> Optional[object]:
 # Проблеми останньої розсилки по користувачу: {user_id: [(pid | None, код)]}.
 # pid=None — проблема всього акаунта (наприклад, сесію завершено). Для сповіщень.
 LAST_PROBLEMS: dict[str, list[tuple[Optional[int], str]]] = {}
+LAST_PROBLEM_MODE: dict[str, str] = {}   # подія («alert»/«clear»), під час якої вони виникли
 
 
 def _parse_failures(failures: list[str]) -> list[tuple[Optional[int], str]]:
@@ -138,10 +141,34 @@ def _parse_failures(failures: list[str]) -> list[tuple[Optional[int], str]]:
     return out
 
 
+async def _detect_migration(client: TelegramClient, json_path: str, pid: int) -> bool:
+    """Звичайну групу перетворили на супергрупу — старий ID більше не працює.
+    Запамʼятовуємо новий ID у профілі, щоб запропонувати користувачу перенесення."""
+    if pid >= 0 or str(pid).startswith("-100"):
+        return False  # не звичайна група
+    try:
+        ent = await client.get_entity(pid)
+        mig = getattr(ent, "migrated_to", None)
+        if not (mig and getattr(ent, "deactivated", False)):
+            return False
+        new_pid = tl_utils.get_peer_id(PeerChannel(mig.channel_id))
+        try:
+            title = getattr(await client.get_entity(new_pid), "title", None) or str(new_pid)
+        except Exception:
+            title = getattr(ent, "title", None) or str(new_pid)
+        record_target_migration(json_path, pid, new_pid, title)
+        log.info("chat %d перетворено на супергрупу %d («%s»)", pid, new_pid, title)
+        return True
+    except Exception as exc:
+        log.debug("migration check pid=%d: %s", pid, exc)
+        return False
+
+
 async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional[str]]:
     """Робить розсилку для одного користувача. Повертає (username, success, err)."""
     username_base = os.path.splitext(os.path.basename(json_path))[0]
     LAST_PROBLEMS.pop(username_base, None)
+    LAST_PROBLEM_MODE[username_base] = mode
     try:
         data = load_user_json(json_path)
     except Exception as e:
@@ -346,7 +373,10 @@ async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional
                 await asyncio.sleep(random.uniform(0.7, 2.2))
 
             except RPCError as e:
-                failures.append(f"{pid}:{e.__class__.__name__}")
+                code = e.__class__.__name__
+                if await _detect_migration(client, json_path, pid):
+                    code = "migrated"
+                failures.append(f"{pid}:{code}")
                 log.warning("[%s] RPCError pid=%d: %s", username_base, pid, e)
             except Exception as e:
                 failures.append(f"{pid}:{type(e).__name__}")

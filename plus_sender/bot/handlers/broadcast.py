@@ -50,6 +50,7 @@ from ...storage import (
     get_targets_meta,
     load_user,
     message_for_target,
+    move_target,
     save_user,
     session_path,
     set_schedule,
@@ -370,7 +371,8 @@ def _home_screen(data: dict) -> tuple[str, types.InlineKeyboardMarkup]:
         f"{body}\n\n"
         f"⏰ Час роботи: <b>{sched_text}</b>"
     )
-    rows = [[I(text=f"💬 {truncate(_target_title(data, pid), 30)}", callback_data=f"st:chat:{pid}")]
+    rows = [[I(text=f"💬 {truncate(_target_title(data, pid), 30)}" + (" ⚠️" if _migrated(data, pid) else ""),
+               callback_data=f"st:chat:{pid}")]
             for pid in targets]
     if len(targets) < MAX_TARGETS:
         rows.append([I(text="➕ Додати чат", callback_data="st:add")])
@@ -406,14 +408,26 @@ def _add_screen(
     return text, _kb(rows)
 
 
+def _migrated(data: dict, pid: int) -> Optional[tuple[int, str]]:
+    item = get_target_messages(data).get(pid) or {}
+    return (int(item["migrated_to"]), str(item.get("migrated_title") or "")) if item.get("migrated_to") else None
+
+
 def _chat_screen(data: dict, pid: int) -> tuple[str, types.InlineKeyboardMarkup]:
+    mig = _migrated(data, pid)
+    warn = (
+        f"⚠️ <b>Групу перетворено на супергрупу «{h(mig[1])}».</b> Старий чат більше не працює — "
+        f"перенесіть налаштування туди або приберіть чат.\n\n"
+    ) if mig else ""
     text = (
         f"💬  <b>{h(_target_title(data, pid))}</b>\n{HR}\n\n"
+        f"{warn}"
         f"{_event_line(data, pid, 'alert')}\n"
         f"{_event_line(data, pid, 'clear')}\n\n"
         f"<i>Натисніть подію, щоб змінити, що надсилати.</i>"
     )
-    rows = [
+    rows = [[I(text=f"🔁 Перенести в «{truncate(mig[1], 24)}»", callback_data=f"st:mig:{pid}")]] if mig else []
+    rows += [
         [I(text=f"🚨 Тривога: {truncate(_describe(data, pid, 'alert'), 30)}", callback_data=f"st:mode:{pid}:alert")],
         [I(text=f"✅ Відбій: {truncate(_describe(data, pid, 'clear'), 30)}", callback_data=f"st:mode:{pid}:clear")],
         [I(text="🗑 Прибрати чат", callback_data=f"st:rm:{pid}"), I(text="‹ Назад", callback_data="st:home")],
@@ -706,6 +720,27 @@ async def cb_quick(call: types.CallbackQuery) -> None:
     save_user(call.from_user, data)
     await call.answer(f"✅ {_mode_name(mode)}: «{QUICK_TEXT}»")
     await _render(call, _after_choice(data, pid))
+
+
+@router.callback_query(F.data.startswith("st:mig:"))
+async def cb_migrate(call: types.CallbackQuery) -> None:
+    data, pid, _, _ = await _load_target(call)
+    if data is None:
+        return
+    mig = _migrated(data, pid)
+    if not mig:
+        await call.answer()
+        await _render(call, _chat_screen(data, pid))
+        return
+    new_pid, title = mig
+    if new_pid in get_targets(data):
+        await call.answer("Ця супергрупа вже є в розсилці — старий чат можна прибрати.", show_alert=True)
+        await _render(call, _chat_screen(data, pid))
+        return
+    move_target(data, pid, new_pid, title)
+    save_user(call.from_user, data)
+    await call.answer(f"🔁 Перенесено в «{title}»")
+    await _render(call, _chat_screen(data, new_pid))
 
 
 @router.callback_query(F.data.startswith("st:rm:"))
