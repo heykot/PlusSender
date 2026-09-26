@@ -15,6 +15,8 @@ SESSIONS_DIR = PROJECT_ROOT / "sessions"
 USERS_DIR = PROJECT_ROOT / "user_data"
 MEDIA_DIR = PROJECT_ROOT / "user_data" / "media"
 ADMINS_FILE = PROJECT_ROOT / "admins.json"
+# Журнал уже оброблених платежів Monobank (захист від повторного зарахування)
+PAYMENTS_FILE = PROJECT_ROOT / "processed_payments.json"
 
 
 def ensure_runtime_dirs() -> None:
@@ -27,6 +29,21 @@ def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _shared_api_credentials() -> tuple[int, str] | None:
+    """Спільні api_id/api_hash застосунку бота (TG_API_ID / TG_API_HASH).
+    Якщо задані — користувачу не треба йти на my.telegram.org."""
+    raw_id, api_hash = _env("TG_API_ID"), _env("TG_API_HASH")
+    if not (raw_id and api_hash):
+        return None
+    try:
+        return int(raw_id), api_hash
+    except ValueError:
+        return None
+
+
+SHARED_API_CREDENTIALS = _shared_api_credentials()
+
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
@@ -37,6 +54,8 @@ class Settings:
     mono_token: str       # Personal token з api.monobank.ua (опціонально)
     mono_jar_id: str      # ID банки-скарбнички (опціонально)
     mono_webhook_port: int  # Порт для aiohttp сервера (default 8080)
+    mono_webhook_secret: str  # Секретний сегмент шляху: /mono-webhook/<secret>
+    mono_webhook_url: str   # Базовий публічний URL (…/mono-webhook), секрет додається сам
 
     @classmethod
     def load(cls) -> "Settings":
@@ -71,6 +90,8 @@ class Settings:
             mono_token=_env("MONO_TOKEN", ""),
             mono_jar_id=_env("MONO_JAR_ID", ""),
             mono_webhook_port=mono_port,
+            mono_webhook_secret=_env("MONO_WEBHOOK_SECRET", ""),
+            mono_webhook_url=_env("MONO_WEBHOOK_URL", ""),
         )
 
 
@@ -141,8 +162,15 @@ BTN_PAYMENT = "💳 Оплата"
 BTN_HELP = "ℹ️ Довідка"
 BTN_REFERRAL = "🎁 Запросити друзів"
 
+# Нове меню, що залежить від етапу. BTN_START/BTN_STOP та статус-кнопка
+# лишаються робочими для клавіатур, які вже висять у користувачів.
+BTN_TURN_ON = "▶️ Увімкнути"
+BTN_TURN_OFF = "🟢 Працює · ⏸ Вимкнути"
+BTN_CHOOSE_CHATS = "🎯 Обрати чати"
+BTN_MORE = "☰ Ще"
+
 # ── Реферальна програма ──
-REFERRAL_BONUS_DAYS = 7              # +N днів запрошувачу за кожного, хто купив тариф
+REFERRAL_BONUS_DAYS = 20             # +N днів запрошувачу, коли запрошений друг уперше оплачує тариф (Monobank)
 REFERRAL_PAYLOAD_PREFIX = "ref_"     # формат: /start ref_<user_id>
 
 # Ця кнопка змінюється динамічно в keyboards.main_menu_kb (статус)
@@ -151,6 +179,8 @@ BTN_STATUS_PREFIX = "📊 Стан:"
 # Скасування / disable надсилання
 BTN_SUPPORT = "🆘 Підтримка"
 BTN_CANCEL = "↩️ Скасувати"
+BTN_CONNECT_QR = "🔳 Увійти через QR (є другий пристрій)"
+BTN_OWN_KEYS = "⚙️ Власні ключі API"
 BTN_DISABLE_TEXT = "🚫 Не надсилати"
 
 CANCEL_TEXTS = {BTN_CANCEL, "Скасувати", "/cancel"}

@@ -10,7 +10,7 @@ from telethon import TelegramClient
 from telethon import utils as tl_utils
 from telethon.tl.types import DocumentAttributeVideo
 
-from ...config import BTN_PROFILE, EMO, HR, SESSIONS_DIR
+from ...config import BTN_PROFILE, EMO, HR
 from ...storage import (
     delay_for_target,
     get_schedule,
@@ -20,6 +20,8 @@ from ...storage import (
     get_targets,
     get_targets_meta,
     load_user,
+    session_file_path,
+    session_path_for_id,
     message_for_target,
 )
 from ...utils import (
@@ -30,7 +32,6 @@ from ...utils import (
     h,
     next_hint,
     preview_message,
-    safe_username_from,
     section,
     status_badge,
 )
@@ -52,7 +53,7 @@ def _is_video_note(msg) -> bool:
     return False
 
 
-async def _count_video_notes(data: dict, username: str) -> dict[int, int]:
+async def _count_video_notes(data: dict, user_id: int) -> dict[int, int]:
     """Підключається до Telethon і рахує кружки в кожному чаті-джерелі.
     Повертає {chat_id: count}. При помилці — пустий dict."""
     api_id = data.get("api_id")
@@ -73,8 +74,7 @@ async def _count_video_notes(data: dict, username: str) -> dict[int, int]:
     if not source_ids:
         return {}
 
-    session_path = os.path.join(SESSIONS_DIR, username)
-    client = TelegramClient(session_path, int(api_id), str(api_hash))
+    client = TelegramClient(session_path_for_id(user_id), int(api_id), str(api_hash))
     counts: dict[int, int] = {}
     try:
         await client.connect()
@@ -152,7 +152,7 @@ def _mode_line(data: dict, pid: int, mode: str,
 def _chats_section(data: dict, fwd_counts: dict[int, int], max_items: int = 8) -> str:
     targets = get_targets(data)
     if not targets:
-        return "<i>не обрано — перейдіть у «🎛 Налаштування»</i>"
+        return "<i>не обрано — натисніть «🎯 Обрати чати»</i>"
 
     meta = get_targets_meta(data)
     lines: list[str] = []
@@ -177,8 +177,7 @@ def _chats_section(data: dict, fwd_counts: dict[int, int], max_items: int = 8) -
 @router.message(F.text == BTN_PROFILE)
 async def show_profile(msg: types.Message) -> None:
     user = msg.from_user
-    username = safe_username_from(user)
-    sess_file = os.path.join(SESSIONS_DIR, f"{username}.session")
+    sess_file = session_file_path(user)
     sess_exists = os.path.isfile(sess_file)
 
     data = load_user(user)
@@ -189,7 +188,7 @@ async def show_profile(msg: types.Message) -> None:
     # Підраховуємо кружки через Telethon (тільки якщо є сесія і є forward-джерела)
     fwd_counts: dict[int, int] = {}
     if sess_exists and api_id and api_hash:
-        fwd_counts = await _count_video_notes(data, username)
+        fwd_counts = await _count_video_notes(data, user.id)
 
     alert_default = h(preview_message(default_message_text(data, "alert"), 80))
     clear_default = h(preview_message(default_message_text(data, "clear"), 80))
@@ -295,9 +294,9 @@ async def show_profile(msg: types.Message) -> None:
     if not sess_exists:
         hint = next_hint("підключіть свій Telegram через «🔌 Підключити».")
     elif n_targets == 0:
-        hint = next_hint("оберіть чати у «🎛 Налаштування».")
+        hint = next_hint("оберіть чати через «🎯 Обрати чати».")
     elif not active:
-        hint = next_hint("натисніть «▶️ Старт» — і бот почне реагувати на тривогу.")
+        hint = next_hint("натисніть «▶️ Увімкнути» — і бот почне реагувати на тривогу.")
     else:
         hint = (
             f"{EMO['star']}  <i>Все налаштовано — бот уже стежить за тривогою.</i>"

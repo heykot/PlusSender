@@ -1,12 +1,14 @@
 """Майстер підключення Telegram-сесії для нового користувача.
 
-UX-покращення відносно старої версії:
-  • api_id та api_hash можна ввести разом (через пробіл / двокрапку / новий рядок)
-  • Якщо вже є збережена сесія — пропонуємо лишити або замінити
-  • Код приймається в будь-якому форматі (з пробілами, тире, дужками)
-  • Зрозумілі повідомлення про помилки на кожному кроці
-  • Після успіху — прямий перехід у налаштування розсилки
-  • Активний Telethon-клієнт зберігається в FSM, без глобальних словників
+Потік:
+  1. Номер телефону — кнопкою «📱 Поділитися номером» (або текстом).
+  2. Код — набирається на inline-клавіатурі, щоб не потрапити в чат
+     повідомленням (інакше Telegram вважає код «пересланим» і блокує вхід).
+  3. Пароль 2FA — лише якщо ввімкнено.
+
+api_id/api_hash беруться зі спільних TG_API_ID/TG_API_HASH бота; якщо їх
+не задано (або користувач обрав «Власні ключі») — спершу питаємо ключі.
+Альтернатива коду — вхід через QR з другого пристрою.
 """
 from __future__ import annotations
 
@@ -30,12 +32,13 @@ from telethon.errors import (
 )
 
 from ...config import (
-    BRAND,
     BTN_CANCEL,
     BTN_CONNECT,
+    BTN_CONNECT_QR,
+    BTN_OWN_KEYS,
     DIV,
-    DIV_THIN,
     EMO,
+    SHARED_API_CREDENTIALS,
 )
 from ...storage import (
     load_user,
@@ -45,20 +48,16 @@ from ...storage import (
 )
 from ...utils import (
     big_step_header,
-    card,
     example_block,
     h,
-    next_hint,
-    section,
     soft_error,
-    step_indicator,
     tip,
 )
 from ..keyboards import (
     cancel_kb,
+    code_keypad_kb,
     connect_existing_session_kb,
-    connect_intro_kb,
-    connect_method_kb,
+    connect_phone_kb,
     connect_post_success_kb,
     connect_qr_kb,
     main_menu_kb,
@@ -75,6 +74,19 @@ _active_clients: dict[int, TelegramClient] = {}
 # Активні QR-логіни та фонові задачі очікування сканування.
 _qr_logins: dict[int, object] = {}        # user_id -> QRLogin
 _qr_tasks: dict[int, asyncio.Task] = {}   # user_id -> очікувач
+
+# aiogram обробляє апдейти паралельно. Кроки входу (натискання цифр, код,
+# пароль) серіалізуємо по користувачу: інакше швидкі натискання губили б
+# цифри, а повторно надісланий пароль ішов би в уже закритий клієнт.
+_step_locks: dict[int, asyncio.Lock] = {}
+
+
+def _step_lock(user_id: int) -> asyncio.Lock:
+    return _step_locks.setdefault(user_id, asyncio.Lock())
+
+
+async def _in_state(state: FSMContext, expected) -> bool:
+    return await state.get_state() == expected.state
 
 # Скільки всього чекаємо на сканування QR (сек), і час життя одного токена.
 QR_TOTAL_TIMEOUT = 300
@@ -169,80 +181,23 @@ def _sent_code_where(sent_obj) -> str:
     }.get(type_name, "у Telegram (місце невідоме — перевірте додаток і SMS)")
 
 
-def _resend_keyboard(can_resend_sms: bool) -> Optional[types.InlineKeyboardMarkup]:
-    """Inline-клавіатура з кнопкою повторного надсилання."""
-    rows: list[list[types.InlineKeyboardButton]] = []
-    if can_resend_sms:
-        rows.append([types.InlineKeyboardButton(
-            text="🔁  Надіслати код через SMS",
-            callback_data="connect:resend_sms",
-        )])
-    rows.append([types.InlineKeyboardButton(
-        text="↩️  Скасувати підключення",
-        callback_data="connect:cancel",
-    )])
-    return types.InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
-
-
-# ===================== Точка входу =====================
 @router.message(Command("connect"))
 @router.message(F.text == BTN_CONNECT)
 async def start_connection(msg: types.Message, state: FSMContext) -> None:
+    await _disconnect_active(msg.from_user.id)
     await state.clear()
-    sess_file = session_file_path(msg.from_user)
-    has_session = os.path.isfile(sess_file)
 
-    sess_name = msg.from_user.username or msg.from_user.id
-
-    intro = card(
-        title="Підключення вашого Telegram",
-        emoji=EMO["key"],
-        sections=[
-            (
-                "Навіщо це потрібно",
-                "Щоб бот міг надсилати повідомлення <b>від вашого імені</b> "
-                "(а не «від бота»), йому потрібен доступ до вашого акаунта "
-                "через офіційні ключі Telegram.\n"
-                "<i>Це робиться один раз — далі все працює само.</i>",
-            ),
-            (
-                "Що знадобиться (4 речі)",
-                "①  🔑  <b>api_id</b> та <b>api_hash</b>\n"
-                "      <i>Беруться на</i> "
-                "<a href='https://my.telegram.org/auth'>my.telegram.org</a> "
-                "<i>→ API Development Tools → Create application</i>\n\n"
-                "②  📱  <b>Номер телефону</b> у форматі <code>+380XXXXXXXXX</code>\n\n"
-                "③  🔢  <b>Код</b>, який Telegram надішле у ваш акаунт\n\n"
-                "④  🔐  <b>Пароль 2FA</b> — лише якщо у вас увімкнена двофакторка",
-            ),
-            (
-                f"{EMO['shield']} Це безпечно?",
-                "<b>Так.</b> Ключі зберігаються тільки у вашому профілі тут, "
-                "на сервері бота. Сесія — це файл "
-                f"<code>sessions/{sess_name}.session</code>.\n"
-                "Жодних паролів я не бачу й не передаю.",
-            ),
-        ],
-    )
-    await msg.answer(intro, disable_web_page_preview=True)
-
-    if has_session:
+    if os.path.isfile(session_file_path(msg.from_user)):
         await msg.answer(
-            f"{EMO['info']}  <b>У вас уже є збережена сесія</b>\n"
-            f"<i>Можна продовжити з нею або створити нову.\n"
-            f"Якщо все працює — лишайте поточну.</i>",
+            f"{EMO['info']}  <b>Ваш Telegram уже підключено</b>\n"
+            f"<i>Якщо розсилка працює — лишайте як є.</i>",
             reply_markup=connect_existing_session_kb(),
         )
         return
 
-    await msg.answer(
-        f"{EMO['rocket']}  <b>Готові почати?</b>\n"
-        f"<i>Це займе 2–3 хвилини. Натискайте «🚀 Почати» — і поїхали!</i>",
-        reply_markup=connect_intro_kb(),
-    )
+    await _begin_connect(msg, state)
 
 
-# ===================== Існуюча сесія =====================
 @router.callback_query(F.data == "connect:keep")
 async def keep_existing(call: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -264,7 +219,7 @@ async def replace_existing(call: types.CallbackQuery, state: FSMContext) -> None
         log.warning("Не вдалося видалити стару сесію: %s", e)
     await call.answer("Стару сесію видалено")
     await call.message.edit_reply_markup(reply_markup=None)
-    await _begin_credentials(call.message, state, call.from_user)
+    await _begin_connect(call.message, state)
 
 
 @router.callback_query(F.data == "connect:cancel")
@@ -280,77 +235,48 @@ async def cancel_intro(call: types.CallbackQuery, state: FSMContext) -> None:
     await call.message.answer("❎ Скасовано.", reply_markup=main_menu_kb(call.from_user))
 
 
-# ===================== Повторне надсилання коду через SMS =====================
-@router.callback_query(F.data == "connect:resend_sms", ConnectStates.waiting_code)
-async def resend_sms_code(call: types.CallbackQuery, state: FSMContext) -> None:
-    client = _active_clients.get(call.from_user.id)
-    if not client:
-        await call.answer(
-            "Сесія втрачена — натисніть «🔌 Підключити» і почніть заново.",
-            show_alert=True,
-        )
-        return
-
-    fsm_data = await state.get_data()
-    phone = fsm_data.get("phone")
-    if not phone:
-        await call.answer("Не знаю вашого номера. Почніть заново.", show_alert=True)
-        return
-
-    await call.answer("Просимо Telegram надіслати SMS…")
-
-    try:
-        sent = await client.send_code_request(phone, force_sms=True)
-    except Exception as exc:
-        log.warning("connect: resend SMS failed: %s", exc)
-        await call.message.answer(
-            soft_error(
-                "Не вдалось замовити SMS",
-                body=(
-                    f"<code>{h(str(exc))}</code>\n\n"
-                    "<i>Іноді Telegram блокує повторні запити на короткий час. "
-                    "Зачекайте 1–2 хвилини і спробуйте ще раз. "
-                    "Або скасуйте і почніть з «🔌 Підключити».</i>"
-                ),
-                retry=False,
-            )
-        )
-        return
-
-    # Оновлюємо phone_code_hash — старий більше не дійсний
-    await state.update_data(phone_code_hash=sent.phone_code_hash)
-
-    where = _sent_code_where(sent)
-    log.info(
-        "connect: resend SMS ok phone=%s type=%s",
-        phone,
-        type(sent.type).__name__ if sent.type else "?",
-    )
-
-    # Чи лишилась можливість попросити ще раз?
-    can_resend_again = sent.next_type is not None
-
-    await call.message.answer(
-        f"📨  <b>Код надіслано повторно.</b>\n\n"
-        f"<b>Куди:</b>\n   {where}\n\n"
-        f"<i>Введіть отриманий код одним повідомленням. "
-        f"Старий код більше не діє.</i>",
-        reply_markup=_resend_keyboard(can_resend_again),
-        disable_web_page_preview=True,
-    )
+# ===================== Початок =====================
+async def _begin_connect(msg: types.Message, state: FSMContext) -> None:
+    """Зі спільними ключами бота — одразу крок телефону, інакше — ключі."""
+    if SHARED_API_CREDENTIALS:
+        api_id, api_hash = SHARED_API_CREDENTIALS
+        await state.update_data(api_id=api_id, api_hash=api_hash)
+        await _ask_phone(msg, state)
+    else:
+        await _ask_credentials(msg, state)
 
 
-@router.callback_query(F.data == "connect:start")
-async def begin_via_button(call: types.CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "connect:own_keys")
+async def own_keys(call: types.CallbackQuery, state: FSMContext) -> None:
     await call.answer()
-    await call.message.edit_reply_markup(reply_markup=None)
-    await _begin_credentials(call.message, state, call.from_user)
+    await _disconnect_active(call.from_user.id)
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await _ask_credentials(call.message, state)
 
 
-async def _begin_credentials(msg: types.Message, state: FSMContext, user: types.User) -> None:
+async def _ask_phone(msg: types.Message, state: FSMContext) -> None:
+    await state.set_state(ConnectStates.waiting_phone)
+    await msg.answer(
+        f"{EMO['key']}  <b>Підключення вашого Telegram</b>\n"
+        f"{DIV}\n"
+        f"Щоб надсилати повідомлення <b>від вашого імені</b>, боту потрібен "
+        f"вхід у ваш акаунт — як на новому пристрої. Це робиться один раз.\n\n"
+        f"{big_step_header(1, 2, 'Номер телефону', emoji=EMO['phone'])}\n\n"
+        f"Натисніть <b>«📱 Поділитися номером»</b> внизу 👇 — або введіть номер "
+        f"у форматі <code>+380XXXXXXXXX</code>.\n\n"
+        f"<i>Сесія зберігається лише на сервері бота. Завершити її можна будь-коли: "
+        f"Telegram → Налаштування → Пристрої.</i>",
+        reply_markup=connect_phone_kb(own_keys=bool(SHARED_API_CREDENTIALS)),
+    )
+
+
+async def _ask_credentials(msg: types.Message, state: FSMContext) -> None:
     await state.set_state(ConnectStates.waiting_credentials)
     text = (
-        f"{big_step_header(1, 4, 'Ключі API', emoji=EMO['key'])}\n\n"
+        f"{EMO['key']}  <b>Ключі API</b>\n\n"
         f"Зайдіть на <b>my.telegram.org</b> → "
         f"<b>API Development Tools</b> → створіть додаток.\n"
         f"Скопіюйте <b>api_id</b> (число) та <b>api_hash</b> (довгий рядок) "
@@ -367,16 +293,12 @@ async def _begin_credentials(msg: types.Message, state: FSMContext, user: types.
         )],
     ])
     await msg.answer(text, reply_markup=open_kb, disable_web_page_preview=True)
-
-    # Окреме коротке повідомлення з reply-клавіатурою «↩️ Скасувати»,
-    # щоб у користувача завжди була під рукою кнопка виходу з майстра.
     await msg.answer(
         "<i>👆 Натисніть кнопку щоб відкрити сайт, або вставте ключі сюди.</i>",
         reply_markup=cancel_kb(),
     )
 
 
-# ===================== Крок 1: api credentials =====================
 @router.message(ConnectStates.waiting_credentials)
 async def step_credentials(msg: types.Message, state: FSMContext) -> None:
     parsed = _parse_credentials(msg.text or "")
@@ -400,34 +322,9 @@ async def step_credentials(msg: types.Message, state: FSMContext) -> None:
         return
 
     api_id, api_hash = parsed
-
-    # Зберігаємо в профіль одразу
-    data = load_user(msg.from_user)
-    data.update(
-        {
-            "user_id": msg.from_user.id,
-            "user_name": msg.from_user.username,
-            "api_id": api_id,
-            "api_hash": api_hash,
-        }
-    )
-    save_user(msg.from_user, data)
     await state.update_data(api_id=api_id, api_hash=api_hash)
-    # Стан скидаємо — далі вибір способу йде через inline-кнопки
-    await state.set_state(None)
-
-    await msg.answer(
-        f"{EMO['ok']}  <b>Чудово!</b>  Ключі прийнято: "
-        f"<code>api_id={api_id}</code>\n\n"
-        f"{big_step_header(2, 3, 'Спосіб входу', emoji=EMO['key'])}\n\n"
-        f"<b>🔢 Код / SMS</b> — якщо у вас <b>один телефон</b>. "
-        f"Telegram надішле код у ваш застосунок (чат «Telegram»), "
-        f"ви скопіюєте його сюди.\n\n"
-        f"<b>🔳 QR-код</b> — якщо є <b>другий пристрій</b> (ПК або інший телефон) "
-        f"з вашим Telegram, щоб відсканувати QR.\n\n"
-        f"{tip('лише цей телефон під рукою — обирайте «Код / SMS».')}",
-        reply_markup=connect_method_kb(),
-    )
+    await msg.answer(f"{EMO['ok']}  Ключі прийнято: <code>api_id={api_id}</code>")
+    await _ask_phone(msg, state)
 
 
 # ===================== Вибір способу входу =====================
@@ -450,23 +347,6 @@ _QR_2FA_PROMPT = (
     "одним повідомленням.\n\n"
     "<i>Повідомлення з паролем буде видалено одразу після отримання.</i>"
 )
-
-
-@router.callback_query(F.data == "connect:method_code")
-async def method_code(call: types.CallbackQuery, state: FSMContext) -> None:
-    await call.answer()
-    try:
-        await call.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await state.set_state(ConnectStates.waiting_phone)
-    await call.message.answer(
-        f"{big_step_header(2, 3, 'Номер телефону', emoji=EMO['phone'])}\n\n"
-        f"Надішліть номер вашого Telegram у міжнародному форматі.\n\n"
-        f"{example_block('+380501234567', '+380 50 123 45 67')}\n\n"
-        f"{tip('пробіли і дужки приберу автоматично — головне щоб був код країни.')}",
-        reply_markup=cancel_kb(),
-    )
 
 
 @router.callback_query(F.data == "connect:method_qr")
@@ -672,7 +552,37 @@ async def _qr_waiter(
         pass
 
 
-# ===================== Крок 2: телефон =====================
+# ===================== Крок 1: телефон =====================
+@router.message(ConnectStates.waiting_phone, F.text == BTN_CONNECT_QR)
+async def phone_step_qr(msg: types.Message, state: FSMContext) -> None:
+    await _start_qr_login(msg, state, msg.from_user)
+
+
+@router.message(ConnectStates.waiting_phone, F.text == BTN_OWN_KEYS)
+async def phone_step_own_keys(msg: types.Message, state: FSMContext) -> None:
+    await _ask_credentials(msg, state)
+
+
+@router.message(ConnectStates.waiting_phone, F.contact)
+async def step_phone_contact(msg: types.Message, state: FSMContext) -> None:
+    contact = msg.contact
+    # Кнопка request_contact завжди шле власний номер; чужий контакт (переслана
+    # візитка) має інший user_id — такий не приймаємо.
+    if contact.user_id != msg.from_user.id:
+        await msg.answer(
+            soft_error(
+                "Це не ваш номер",
+                body="Натисніть кнопку «📱 Поділитися номером» внизу — Telegram надішле саме ваш номер.",
+            )
+        )
+        return
+    phone = _normalize_phone(contact.phone_number)
+    if not phone:
+        await msg.answer(soft_error("Не вдалося прочитати номер", body="Введіть його вручну: <code>+380XXXXXXXXX</code>"))
+        return
+    await _request_code(msg, state, phone)
+
+
 @router.message(ConnectStates.waiting_phone)
 async def step_phone(msg: types.Message, state: FSMContext) -> None:
     phone = _normalize_phone(msg.text or "")
@@ -680,16 +590,30 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
         await msg.answer(
             soft_error(
                 "Не схоже на номер телефону",
-                body=example_block("+380501234567", "+380 50 123 45 67"),
+                body="Натисніть «📱 Поділитися номером» внизу або введіть номер так:\n"
+                     + example_block("+380501234567", "+380 50 123 45 67"),
             )
         )
         return
+    await _request_code(msg, state, phone)
 
+
+async def _request_code(msg: types.Message, state: FSMContext, phone: str) -> None:
     fsm_data = await state.get_data()
-    api_id = int(fsm_data["api_id"])
-    api_hash = str(fsm_data["api_hash"])
+    try:
+        api_id = int(fsm_data["api_id"])
+        api_hash = str(fsm_data["api_hash"])
+    except (KeyError, ValueError, TypeError):
+        await state.clear()
+        await msg.answer(
+            soft_error("Загубилися дані підключення", body=f"Почніть заново через «{h(BTN_CONNECT)}».", retry=False),
+            reply_markup=main_menu_kb(msg.from_user),
+        )
+        return
 
-    # Підключаємось і просимо код
+    # Якщо перед цим користувач пробував QR — закриваємо той клієнт
+    await _disconnect_active(msg.from_user.id)
+
     client = TelegramClient(session_path(msg.from_user), api_id, api_hash)
     try:
         await client.connect()
@@ -698,7 +622,7 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
             soft_error(
                 "Не вдалося з'єднатися з Telegram",
                 body=f"<code>{h(str(e))}</code>\n\n"
-                     f"<i>Перевірте інтернет і повторіть «🔌 Підключити».</i>",
+                     f"<i>Спробуйте ще раз через хвилину.</i>",
                 retry=False,
             )
         )
@@ -714,7 +638,7 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
         await msg.answer(
             soft_error(
                 "Номер не приймається Telegram",
-                body="Перевірте, чи правильно скопійовано номер. Має бути зареєстрований у Telegram.",
+                body="Перевірте номер. Він має бути зареєстрований у Telegram.",
             )
         )
         try:
@@ -737,12 +661,8 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
         return
 
     _active_clients[msg.from_user.id] = client
-    await state.update_data(phone=phone, phone_code_hash=sent.phone_code_hash)
+    await state.update_data(phone=phone)
     await state.set_state(ConnectStates.waiting_code)
-
-    where = _sent_code_where(sent)
-    # SMS можна попросити повторно тільки якщо Telegram дозволяє наступний тип
-    can_resend_sms = sent.next_type is not None
 
     log.info(
         "connect: code requested phone=%s type=%s next=%s timeout=%s",
@@ -752,108 +672,233 @@ async def step_phone(msg: types.Message, state: FSMContext) -> None:
         getattr(sent, "timeout", "?"),
     )
 
-    await msg.answer(
-        f"{EMO['ok']}  <b>Номер прийнято.</b>\n\n"
-        f"{big_step_header(3, 3, 'Код підтвердження', emoji=EMO['code'])}\n\n"
+    # Reply-клавіатуру з кнопкою номера міняємо на «Скасувати»
+    await msg.answer(f"{EMO['ok']}  <b>Номер прийнято.</b>", reply_markup=cancel_kb())
+    await _send_code_keypad(msg.bot, msg.chat.id, state, sent)
+
+
+# ===================== Крок 2: код (inline-клавіатура) =====================
+_CODE_MAX_LEN = 10
+
+
+def _code_prompt_text(where: str, entered: str, length: int, note: str = "") -> str:
+    slots = list(entered)
+    if length > len(slots):
+        slots += ["_"] * (length - len(slots))
+    display = " ".join(slots) if slots else "—"
+    text = (
+        f"{big_step_header(2, 2, 'Код підтвердження', emoji=EMO['code'])}\n\n"
         f"📨  <b>Куди надіслано код:</b>\n   {where}\n\n"
-        f"Введіть код одним повідомленням.\n\n"
-        f"{example_block('1 2 3 4 5', '1-2-3-4-5')}\n\n"
-        f"{tip('обовʼязково через пробіл або дефіс.')}\n\n"
-        f"<i>Якщо коду немає протягом хвилини — натисніть «🔁 Надіслати код через SMS» нижче.</i>",
-        reply_markup=_resend_keyboard(can_resend_sms),
+        f"Наберіть код <b>кнопками нижче</b> 👇\n"
+        f"<i>Не надсилайте його повідомленням — Telegram вважатиме код "
+        f"пересланим і заблокує вхід.</i>\n\n"
+        f"<b>Код:</b>  <code>{display}</code>"
+    )
+    return f"{text}\n\n{note}" if note else text
+
+
+async def _send_code_keypad(bot, chat_id: int, state: FSMContext, sent) -> None:
+    where = _sent_code_where(sent)
+    length = int(getattr(sent.type, "length", 0) or 0)
+    can_resend = sent.next_type is not None
+    prompt = await bot.send_message(
+        chat_id,
+        _code_prompt_text(where, "", length),
+        reply_markup=code_keypad_kb(can_resend),
         disable_web_page_preview=True,
     )
-    # Окремо — reply-клавіатура з «Скасувати» (щоб була завжди під рукою)
-    await msg.answer(
-        "<i>👆 Очікую код від Telegram.</i>",
-        reply_markup=cancel_kb(),
+    await state.update_data(
+        phone_code_hash=sent.phone_code_hash,
+        code_input="",
+        code_len=length,
+        code_where=where,
+        code_can_resend=can_resend,
+        code_msg_id=prompt.message_id,
     )
 
 
-# ===================== Крок 3: код =====================
-@router.message(ConnectStates.waiting_code)
-async def step_code(msg: types.Message, state: FSMContext) -> None:
-    client = _active_clients.get(msg.from_user.id)
-    if not client:
-        await state.clear()
-        await msg.answer(
-            f"{EMO['warn']} Сесію перервано. Почніть заново через «{h(BTN_CONNECT)}».",
-            reply_markup=main_menu_kb(msg.from_user),
+async def _update_code_prompt(
+    bot, chat_id: int, fsm: dict, entered: str, note: str = "", keypad: bool = True
+) -> None:
+    msg_id = fsm.get("code_msg_id")
+    if not msg_id:
+        return
+    try:
+        await bot.edit_message_text(
+            _code_prompt_text(str(fsm.get("code_where") or ""), entered, int(fsm.get("code_len") or 0), note),
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=code_keypad_kb(bool(fsm.get("code_can_resend"))) if keypad else None,
+            disable_web_page_preview=True,
         )
+    except Exception:
+        pass  # «message is not modified» тощо
+
+
+@router.callback_query(F.data.startswith("code:"), ConnectStates.waiting_code)
+async def code_keypad(call: types.CallbackQuery, state: FSMContext) -> None:
+    async with _step_lock(call.from_user.id):
+        # Поки чекали на лок, код міг бути вже прийнятий
+        if not await _in_state(state, ConnectStates.waiting_code):
+            await call.answer()
+            return
+        await _code_keypad_step(call, state)
+
+
+async def _code_keypad_step(call: types.CallbackQuery, state: FSMContext) -> None:
+    fsm = await state.get_data()
+    entered = str(fsm.get("code_input") or "")
+    length = int(fsm.get("code_len") or 0)
+
+    if call.data.startswith("code:d:"):
+        if len(entered) < (length or _CODE_MAX_LEN):
+            entered += call.data[-1]
+    elif call.data == "code:back":
+        entered = entered[:-1]
+
+    submit = call.data == "code:ok" or (length and len(entered) == length)
+    if submit and not entered:
+        await call.answer("Спершу наберіть код")
+        return
+    await call.answer()
+    await state.update_data(code_input=entered)
+
+    if not submit:
+        await _update_code_prompt(call.bot, call.message.chat.id, fsm, entered)
         return
 
+    await _update_code_prompt(call.bot, call.message.chat.id, fsm, entered, note="⏳ <i>Перевіряю…</i>", keypad=False)
+    await _submit_code(call.bot, call.message.chat.id, call.from_user, state, entered)
+
+
+@router.callback_query(F.data.startswith("code:"))
+async def code_keypad_stale(call: types.CallbackQuery) -> None:
+    await call.answer(f"Цей вхід уже завершено. Почніть заново через «{BTN_CONNECT}».", show_alert=True)
+
+
+@router.message(ConnectStates.waiting_code)
+async def step_code_text(msg: types.Message, state: FSMContext) -> None:
+    """Запасний шлях: код надіслали текстом. Часто це вже заблокований код,
+    тому видаляємо повідомлення й підказуємо про клавіатуру."""
     code = _normalize_code(msg.text or "")
     if not code:
         await msg.answer(
             soft_error(
-                "У повідомленні не знайшов жодної цифри",
-                body="Введіть код, який Telegram надіслав вам у застосунок.",
+                "Наберіть код кнопками",
+                body="Використовуйте цифрову клавіатуру під повідомленням з кодом 👆",
             )
         )
         return
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    async with _step_lock(msg.from_user.id):
+        if await _in_state(state, ConnectStates.waiting_code):
+            await _submit_code(msg.bot, msg.chat.id, msg.from_user, state, code)
 
-    fsm_data = await state.get_data()
-    phone = fsm_data.get("phone")
-    code_hash = fsm_data.get("phone_code_hash")
+
+async def _submit_code(bot, chat_id: int, user: types.User, state: FSMContext, code: str) -> None:
+    client = _active_clients.get(user.id)
+    fsm = await state.get_data()
+    if not client:
+        await state.clear()
+        await bot.send_message(
+            chat_id,
+            f"{EMO['warn']} Сесію перервано. Почніть заново через «{h(BTN_CONNECT)}».",
+            reply_markup=main_menu_kb(user),
+        )
+        return
 
     try:
-        await client.sign_in(phone=phone, code=code, phone_code_hash=code_hash)
+        await client.sign_in(phone=fsm.get("phone"), code=code, phone_code_hash=fsm.get("phone_code_hash"))
     except SessionPasswordNeededError:
+        await _update_code_prompt(bot, chat_id, fsm, code, note="✅ <i>Код прийнято.</i>", keypad=False)
         await state.set_state(ConnectStates.waiting_password)
-        await msg.answer(
-            f"{big_step_header(4, 4, 'Пароль 2FA (двофакторка)', emoji=EMO['lock'])}\n\n"
-            f"На вашому акаунті ввімкнено двофакторну автентифікацію.\n"
-            f"Введіть свій <b>cloud password</b> від Telegram <u>точно як є</u>, "
-            f"одним повідомленням.\n\n"
-            f"{tip('повідомлення з паролем буде <b>видалено одразу</b> після отримання — для безпеки.')}",
-            reply_markup=cancel_kb(),
-        )
+        await bot.send_message(chat_id, _QR_2FA_PROMPT, reply_markup=cancel_kb())
         return
     except PhoneCodeInvalidError:
-        await msg.answer(
-            soft_error(
-                "Код не підійшов",
-                body="Перевірте, чи ви скопіювали останній код, який надіслав Telegram.",
-            )
+        await state.update_data(code_input="")
+        await _update_code_prompt(
+            bot, chat_id, fsm, "",
+            note="❌ <b>Код не підійшов.</b> <i>Перевірте останній код від Telegram і наберіть ще раз.</i>",
         )
         return
     except PhoneCodeExpiredError:
-        await msg.answer(
+        await _update_code_prompt(bot, chat_id, fsm, code, note="⌛ <b>Код прострочений.</b>", keypad=False)
+        await bot.send_message(
+            chat_id,
             soft_error(
                 "Код вже прострочений",
-                body=f"Telegram дає на код кілька хвилин. Почніть заново через «{h(BTN_CONNECT)}» — "
-                     f"ми надішлемо новий код.",
+                body=f"Почніть заново через «{h(BTN_CONNECT)}» — ми надішлемо новий код.",
                 retry=False,
-            )
+            ),
+            reply_markup=main_menu_kb(user),
         )
-        await _disconnect_active(msg.from_user.id)
+        await _disconnect_active(user.id)
         await state.clear()
         return
     except Exception as e:
-        await msg.answer(
+        await state.update_data(code_input="")
+        await _update_code_prompt(
+            bot, chat_id, fsm, "",
+            note=f"❌ <b>Не вийшло авторизуватися:</b> <code>{h(str(e))}</code>",
+        )
+        return
+
+    await _update_code_prompt(bot, chat_id, fsm, code, note="✅ <i>Код прийнято.</i>", keypad=False)
+    await _finish_success_core(bot, chat_id, user, state)
+
+
+# ===================== Повторне надсилання коду через SMS =====================
+@router.callback_query(F.data == "connect:resend_sms", ConnectStates.waiting_code)
+async def resend_sms_code(call: types.CallbackQuery, state: FSMContext) -> None:
+    client = _active_clients.get(call.from_user.id)
+    if not client:
+        await call.answer(
+            "Сесія втрачена — натисніть «🔌 Підключити» і почніть заново.",
+            show_alert=True,
+        )
+        return
+
+    fsm = await state.get_data()
+    phone = fsm.get("phone")
+    if not phone:
+        await call.answer("Не знаю вашого номера. Почніть заново.", show_alert=True)
+        return
+
+    await call.answer("Просимо Telegram надіслати SMS…")
+
+    try:
+        sent = await client.send_code_request(phone, force_sms=True)
+    except Exception as exc:
+        log.warning("connect: resend SMS failed: %s", exc)
+        await call.message.answer(
             soft_error(
-                "Не вийшло авторизуватися",
-                body=f"<code>{h(str(e))}</code>",
+                "Не вдалось замовити SMS",
+                body=(
+                    f"<code>{h(str(exc))}</code>\n\n"
+                    "<i>Іноді Telegram блокує повторні запити на короткий час. "
+                    "Зачекайте 1–2 хвилини і спробуйте ще раз.</i>"
+                ),
                 retry=False,
             )
         )
         return
 
-    await _finish_success(msg, state)
+    log.info(
+        "connect: resend SMS ok phone=%s type=%s",
+        phone,
+        type(sent.type).__name__ if sent.type else "?",
+    )
+    # Старий код більше не діє — стару клавіатуру прибираємо, надсилаємо нову
+    await _update_code_prompt(call.bot, call.message.chat.id, fsm, "", note="🔁 <i>Надіслано новий код — див. нижче.</i>", keypad=False)
+    await _send_code_keypad(call.bot, call.message.chat.id, state, sent)
 
 
-# ===================== Крок 4: 2FA =====================
+# ===================== Крок 3: 2FA =====================
 @router.message(ConnectStates.waiting_password)
 async def step_password(msg: types.Message, state: FSMContext) -> None:
-    client = _active_clients.get(msg.from_user.id)
-    if not client:
-        await state.clear()
-        await msg.answer(
-            f"{EMO['warn']} Сесію перервано. Почніть заново.",
-            reply_markup=main_menu_kb(msg.from_user),
-        )
-        return
-
     password = msg.text or ""
     # Видаляємо повідомлення з паролем одразу для безпеки
     try:
@@ -861,34 +906,68 @@ async def step_password(msg: types.Message, state: FSMContext) -> None:
     except Exception:
         pass
 
-    if not password:
-        await msg.answer(
-            soft_error(
-                "Пароль порожній",
-                body="Введіть свій cloud password від Telegram (двофакторна автентифікація).",
-            )
-        )
-        return
+    async with _step_lock(msg.from_user.id):
+        # Повторно надісланий пароль, поки перевірявся перший, — ігноруємо
+        if not await _in_state(state, ConnectStates.waiting_password):
+            return
 
-    try:
-        await client.sign_in(password=password)
-    except Exception as e:
-        await msg.answer(
-            soft_error(
-                "Пароль не підійшов",
-                body=f"<code>{h(str(e))}</code>\n\n"
-                     f"<i>Перевірте розкладку та регістр літер.</i>",
+        client = _active_clients.get(msg.from_user.id)
+        if not client:
+            await state.clear()
+            await msg.answer(
+                f"{EMO['warn']} Сесію перервано. Почніть заново.",
+                reply_markup=main_menu_kb(msg.from_user),
             )
-        )
-        return
+            return
 
-    await _finish_success(msg, state)
+        if not password:
+            await msg.answer(
+                soft_error(
+                    "Пароль порожній",
+                    body="Введіть свій cloud password від Telegram (двофакторна автентифікація).",
+                )
+            )
+            return
+
+        checking = await msg.answer("⏳ <i>Перевіряю пароль…</i>")
+        try:
+            await client.sign_in(password=password)
+        except Exception as e:
+            await msg.answer(
+                soft_error(
+                    "Пароль не підійшов",
+                    body=f"<code>{h(str(e))}</code>\n\n"
+                         f"<i>Перевірте розкладку та регістр літер.</i>",
+                )
+            )
+            return
+        finally:
+            try:
+                await checking.delete()
+            except Exception:
+                pass
+
+        await _finish_success(msg, state)
 
 
 # ===================== Завершення =====================
 async def _finish_success_core(
     bot, chat_id: int, user: types.User, state: FSMContext
 ) -> None:
+    # Ключі, з якими створено сесію, потрібні розсильнику та профілю
+    fsm = await state.get_data()
+    if fsm.get("api_id") and fsm.get("api_hash"):
+        data = load_user(user)
+        data.update(
+            {
+                "user_id": user.id,
+                "user_name": user.username,
+                "api_id": int(fsm["api_id"]),
+                "api_hash": str(fsm["api_hash"]),
+            }
+        )
+        save_user(user, data)
+
     await _disconnect_active(user.id)
     await state.clear()
 
@@ -897,9 +976,9 @@ async def _finish_success_core(
         f"{DIV}\n"
         f"Тепер бот зможе надсилати повідомлення <b>від вашого імені</b> "
         f"у вибрані чати на тривогу й відбій у Києві.\n\n"
-        f"<b>Залишилось 2 кроки:</b>\n"
-        f"  ①  🎛  <b>Налаштування</b>  →  оберіть чати та що в них надсилати\n"
-        f"  ②  ▶️  <b>Старт</b>  →  увімкніть авто-роботу\n\n"
+        f"<b>Далі:</b>\n"
+        f"  ①  🎯  <b>Обрати чати</b>  →  куди й що надсилати\n"
+        f"  ②  ▶️  <b>Увімкнути</b>  →  і бот працює сам\n\n"
         f"{EMO['warn']}  <i>Якщо бот не реагує — перевірте, чи активний "
         f"доступ у «💳 Оплата».</i>"
     )

@@ -1,4 +1,4 @@
-"""Загальні handlers: /start, /help, /cancel, Старт/Стоп, статус-кнопка.
+"""Загальні handlers: /start, /help, /cancel, перемикач увімк./вимк., меню «Ще».
 
 Цей роутер реєструється ПЕРШИМ — щоб менеджмент-команди (cancel, статус, меню)
 могли перервати будь-який FSM-майстер.
@@ -12,27 +12,31 @@ from aiogram.fsm.context import FSMContext
 from ...config import (
     BRAND,
     BTN_BROADCAST,
-    BTN_CANCEL,
+    BTN_CHOOSE_CHATS,
     BTN_CONNECT,
     BTN_HELP,
+    BTN_MORE,
     BTN_PAYMENT,
     BTN_PROFILE,
     BTN_REFERRAL,
     BTN_START,
+    BTN_STATUS_PREFIX,
     BTN_STOP,
     BTN_SUPPORT,
+    BTN_TURN_OFF,
+    BTN_TURN_ON,
     CANCEL_TEXTS,
     DIV,
     DIV_THIN,
     EMO,
+    REFERRAL_BONUS_DAYS,
     REFERRAL_PAYLOAD_PREFIX,
     TAGLINE,
 )
 from ...storage import (
-    get_access_until,
-    get_status,
     get_targets,
     has_access,
+    has_session,
     load_user,
     refresh_user_meta,
     set_referrer,
@@ -48,9 +52,21 @@ from ...utils import (
     status_label,
     warm_greeting,
 )
-from ..keyboards import main_menu_kb
+from ..keyboards import main_menu_kb, more_menu_kb
 
 router = Router(name="common")
+
+
+async def _notify_referrer_joined(bot, referrer_id: int) -> None:
+    """Повідомляє запрошувача, що за його посиланням прийшов новий користувач."""
+    try:
+        await bot.send_message(
+            referrer_id,
+            f"🎉  <b>За вашим посиланням приєднався друг!</b>\n"
+            f"<i>Щойно він оплатить тариф — ви отримаєте +{REFERRAL_BONUS_DAYS} днів доступу.</i>",
+        )
+    except Exception:
+        pass  # запрошувач міг заблокувати бота
 
 
 def _parse_referral_payload(payload: str) -> int | None:
@@ -81,18 +97,21 @@ async def cmd_start(
         ref_id = _parse_referral_payload(command.args or "")
         if ref_id:
             just_referred = set_referrer(user, ref_id)
+            if just_referred:
+                await _notify_referrer_joined(msg.bot, ref_id)
 
     refresh_user_meta(user)
     data = load_user(user)
     active = bool(data.get("status", False))
     targets_count = len(get_targets(data))
-    has_session = bool(data.get("api_id") and data.get("api_hash"))
+    connected = has_session(user)
+    paid = has_access(user)
 
     # ── Тепле привітання ──
     greeting = warm_greeting(user.first_name)
     ref_badge = (
         f"\n🎁  <i>Вас запросив друг — коли купите тариф, "
-        f"він отримає бонусні дні.</i>"
+        f"він отримає +{REFERRAL_BONUS_DAYS} днів доступу.</i>"
         if just_referred else ""
     )
     header = (
@@ -107,19 +126,21 @@ async def cmd_start(
         "<i>Ви налаштовуєте — далі бот працює сам.</i>"
     )
 
-    # ── Прогрес: 3 кроки з великими маркерами ──
+    # ── Прогрес: кроки в тому ж порядку, що й меню ──
     def _mark(done: bool) -> str:
         return "✅" if done else "▫️"
 
     quick_body = (
-        f"{_mark(has_session)}  <b>① Підключення</b>  🔌\n"
-        f"      <i>прив'язуємо ваш Telegram-акаунт</i>\n\n"
-        f"{_mark(targets_count > 0)}  <b>② Налаштування</b>  🎯\n"
-        f"      <i>обираємо чати та повідомлення</i>\n\n"
-        f"{_mark(active)}  <b>③ Старт</b>  ▶️\n"
-        f"      <i>вмикаємо авто-розсилку</i>"
+        f"{_mark(connected)}  <b>① Підключити Telegram</b>  🔌\n"
+        f"      <i>вхід у ваш акаунт, щоб писати від вашого імені</i>\n\n"
+        f"{_mark(targets_count > 0)}  <b>② Обрати чати</b>  🎯\n"
+        f"      <i>куди й що надсилати</i>\n\n"
+        f"{_mark(paid)}  <b>③ Оплатити доступ</b>  💳\n"
+        f"      <i>потрібен, щоб розсилка працювала</i>\n\n"
+        f"{_mark(active)}  <b>④ Увімкнути</b>  ▶️\n"
+        f"      <i>і бот реагуватиме на тривогу сам</i>"
     )
-    quick = section("Як почати — 3 простих кроки", quick_body)
+    quick = section("Як почати", quick_body)
 
     # ── Стан ──
     state_lines = [
@@ -129,28 +150,7 @@ async def cmd_start(
     ]
     state_block = section("Ваш поточний стан", "\n".join(state_lines))
 
-    # ── Динамічна підказка наступної дії ──
-    if not has_access(user):
-        hint = next_hint(
-            "оплатіть доступ у розділі «💳 Оплата» — і повертайтесь сюди."
-        )
-    elif not has_session:
-        hint = next_hint(
-            "натисніть «🔌 Підключити» — це найдовший крок, далі простіше."
-        )
-    elif targets_count == 0:
-        hint = next_hint(
-            "натисніть «🎛 Налаштування» — оберіть чати, у які буде надсилатися сповіщення."
-        )
-    elif not active:
-        hint = next_hint(
-            "натисніть «▶️ Старт» — і бот почне реагувати на наступну тривогу."
-        )
-    else:
-        hint = (
-            f"{EMO['star']}  <b>Все готово!</b>\n"
-            f"<i>Бот уже стежить за тривогою. Можна закривати чат — він працює сам.</i>"
-        )
+    hint = _next_step_hint(connected, targets_count, paid, active)
 
     text = f"{header}\n{intro}\n\n{quick}\n\n{state_block}\n\n{hint}"
     await msg.answer(text, reply_markup=main_menu_kb(user))
@@ -175,22 +175,21 @@ async def cmd_help(msg: types.Message, state: FSMContext) -> None:
                 "налаштовуєте, що саме надсилати.",
             ),
             (
-                "Як почати — за 3 кроки",
-                "①  🔌  <b>Підключити</b> — прив'язуємо ваш акаунт через Telethon\n"
-                "②  🎛  <b>Налаштування</b> — обираємо чати, тексти, кружечки\n"
-                "③  ▶️  <b>Старт</b> — вмикаємо авто-роботу",
+                "Як почати",
+                "①  🔌  <b>Підключити</b> — вхід у ваш Telegram (номер і код)\n"
+                "②  🎯  <b>Обрати чати</b> — куди й що надсилати\n"
+                "③  💳  <b>Оплата</b> — активний доступ\n"
+                "④  ▶️  <b>Увімкнути</b> — і бот працює сам",
             ),
             (
                 "Часті питання",
-                "<b>Що таке api_id / api_hash?</b>\n"
-                "<i>Ключі вашого Telegram-акаунта. Беруться на "
-                "my.telegram.org → API Development Tools.</i>\n\n"
                 "<b>Чи безпечно?</b>\n"
-                "<i>Так. Ключі зберігаються лише у вашому профілі на сервері бота. "
-                "Жодних паролів я не бачу й не передаю далі.</i>\n\n"
+                "<i>Сесія зберігається лише на сервері бота й використовується тільки "
+                "для розсилки. Пароль 2FA не зберігається — повідомлення з ним одразу "
+                "видаляється. Завершити сесію можна будь-коли: Telegram → Налаштування → Пристрої.</i>\n\n"
                 "<b>Чому не надсилається?</b>\n"
-                "<i>Перевірте: оплачений доступ, активна сесія, обрано чати, "
-                "і кнопка «▶️ Старт» натиснута. Усе це видно в «👤 Профіль».</i>",
+                "<i>Перевірте: активна сесія, обрано чати, оплачений доступ і бот "
+                "увімкнений (кнопка «🟢 Працює»). Усе це видно в «👤 Профіль».</i>",
             ),
             (
                 "Команди",
@@ -230,32 +229,65 @@ async def cancel_any(msg: types.Message, state: FSMContext) -> None:
     )
 
 
-# ===================== Старт / Стоп =====================
+def _next_step_hint(connected: bool, targets_count: int, paid: bool, active: bool) -> str:
+    if not connected:
+        return next_hint(f"натисніть «{BTN_CONNECT}» — це найдовший крок, далі простіше.")
+    if targets_count == 0:
+        return next_hint(f"натисніть «{BTN_CHOOSE_CHATS}» — куди надсилати сповіщення.")
+    if not paid:
+        return next_hint(f"оплатіть доступ у «{BTN_PAYMENT}» — і повертайтесь сюди.")
+    if not active:
+        return next_hint(f"натисніть «{BTN_TURN_ON}» — і бот почне реагувати на наступну тривогу.")
+    return (
+        f"{EMO['star']}  <b>Все готово!</b>\n"
+        f"<i>Бот уже стежить за тривогою. Можна закривати чат — він працює сам.</i>"
+    )
+
+
+# ===================== Увімкнути / вимкнути =====================
 @router.message(Command("on"))
-@router.message(F.text == BTN_START)
+@router.message(F.text.in_({BTN_TURN_ON, BTN_START}))
 async def turn_on(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
     # Перериваємо активний Telethon-клієнт wizard'у, якщо він є
     from .connect import _disconnect_active
     await _disconnect_active(msg.from_user.id)
 
-    if not has_access(msg.from_user):
+    user = msg.from_user
+    if not has_session(user):
         await msg.answer(
-            f"{EMO['warn']}  <b>Немає активного доступу</b>\n"
-            f"Перевірте розділ <b>💳 Оплата</b> або зверніться до адміністратора."
+            f"{EMO['warn']}  <b>Спершу підключіть Telegram</b>\n"
+            f"<i>Натисніть «{BTN_CONNECT}».</i>",
+            reply_markup=main_menu_kb(user),
         )
         return
-    refresh_user_meta(msg.from_user)
-    set_status(msg.from_user, True)
+    if not get_targets(load_user(user)):
+        await msg.answer(
+            f"{EMO['warn']}  <b>Спершу оберіть чати</b>\n"
+            f"<i>Натисніть «{BTN_CHOOSE_CHATS}».</i>",
+            reply_markup=main_menu_kb(user),
+        )
+        return
+    if not has_access(user):
+        await msg.answer(
+            f"{EMO['warn']}  <b>Немає активного доступу</b>\n"
+            f"<i>Оплатіть тариф нижче — і поверніться до «{BTN_TURN_ON}».</i>",
+            reply_markup=main_menu_kb(user),
+        )
+        from .payment import show_payment
+        await show_payment(msg)
+        return
+    refresh_user_meta(user)
+    set_status(user, True)
     await msg.answer(
-        f"{EMO['active']}  <b>Режим увімкнено</b>\n"
+        f"{EMO['active']}  <b>Увімкнено</b>\n"
         f"<i>Бот реагуватиме на наступну тривогу та відбій.</i>",
-        reply_markup=main_menu_kb(msg.from_user),
+        reply_markup=main_menu_kb(user),
     )
 
 
 @router.message(Command("off"))
-@router.message(F.text == BTN_STOP)
+@router.message(F.text.in_({BTN_TURN_OFF, BTN_STOP}))
 async def turn_off(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
     from .connect import _disconnect_active
@@ -263,14 +295,14 @@ async def turn_off(msg: types.Message, state: FSMContext) -> None:
 
     set_status(msg.from_user, False)
     await msg.answer(
-        f"{EMO['inactive']}  <b>Режим вимкнено</b>\n"
+        f"{EMO['inactive']}  <b>Вимкнено</b>\n"
         f"<i>Авто-розсилка призупинена. Налаштування збережено.</i>",
         reply_markup=main_menu_kb(msg.from_user),
     )
 
 
-# Кнопка-індикатор статусу — теж відкриває профіль
-@router.message(F.text.startswith("📊 Статус"))
+# Статус-кнопка зі старого меню («📊 Стан: …», ще раніше «📊 Статус…») — відкриває профіль
+@router.message(F.text.startswith(BTN_STATUS_PREFIX) | F.text.startswith("📊 Статус"))
 async def status_button(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
     from .profile import show_profile
@@ -302,7 +334,7 @@ async def menu_profile(msg: types.Message, state: FSMContext) -> None:
     await show_profile(msg)
 
 
-@router.message(F.text == BTN_BROADCAST)
+@router.message(F.text.in_({BTN_BROADCAST, BTN_CHOOSE_CHATS}))
 async def menu_broadcast(msg: types.Message, state: FSMContext) -> None:
     await _interrupt(msg, state)
     from .broadcast import show_broadcast_settings
@@ -328,3 +360,36 @@ async def menu_support(msg: types.Message, state: FSMContext) -> None:
     await _interrupt(msg, state)
     from .support import open_support
     await open_support(msg, state)
+
+
+# ===================== Меню «☰ Ще» =====================
+@router.message(F.text == BTN_MORE)
+async def menu_more(msg: types.Message, state: FSMContext) -> None:
+    await _interrupt(msg, state)
+    await msg.answer(
+        "☰  <b>Ще</b>",
+        reply_markup=more_menu_kb(connected=has_session(msg.from_user)),
+    )
+
+
+@router.callback_query(F.data.startswith("more:"))
+async def more_action(call: types.CallbackQuery, state: FSMContext) -> None:
+    await call.answer()
+    await state.clear()
+    # Хендлери розділів приймають Message — підставляємо автора натискання
+    msg = call.message.model_copy(update={"from_user": call.from_user})
+    action = call.data.split(":", 1)[1]
+    if action == "referral":
+        from .referral import show_referral
+        await show_referral(msg)
+    elif action == "pay":
+        from .payment import show_payment
+        await show_payment(msg)
+    elif action == "support":
+        from .support import open_support
+        await open_support(msg, state)
+    elif action == "help":
+        await cmd_help(msg, state)
+    elif action == "connect":
+        from .connect import start_connection
+        await start_connection(msg, state)

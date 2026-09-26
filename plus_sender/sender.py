@@ -19,6 +19,7 @@ from telethon.tl.types import (
 
 from .config import SESSIONS_DIR, USERS_DIR
 from .storage import (
+    access_active,
     delay_for_target,
     get_default_media,
     get_target_forward_mode,
@@ -32,7 +33,7 @@ from .storage import (
     load_user_json,
     mark_target_forward_used,
     message_for_target,
-    save_user_json,
+    record_forward_used,
 )
 
 log = logging.getLogger(__name__)
@@ -121,9 +122,26 @@ def _pick_round_robin(msgs: list, used_ids: list[int]) -> Optional[object]:
 
 # ─────────────────────── Основна логіка розсилки ───────────────────────
 
+# Проблеми останньої розсилки по користувачу: {user_id: [(pid | None, код)]}.
+# pid=None — проблема всього акаунта (наприклад, сесію завершено). Для сповіщень.
+LAST_PROBLEMS: dict[str, list[tuple[Optional[int], str]]] = {}
+
+
+def _parse_failures(failures: list[str]) -> list[tuple[Optional[int], str]]:
+    out: list[tuple[Optional[int], str]] = []
+    for f in failures:
+        pid, _, code = f.partition(":")
+        try:
+            out.append((int(pid), code))
+        except ValueError:
+            out.append((None, f))
+    return out
+
+
 async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional[str]]:
     """Робить розсилку для одного користувача. Повертає (username, success, err)."""
     username_base = os.path.splitext(os.path.basename(json_path))[0]
+    LAST_PROBLEMS.pop(username_base, None)
     try:
         data = load_user_json(json_path)
     except Exception as e:
@@ -138,15 +156,12 @@ async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional
     if not targets:
         return username_base, False, "no targets"
 
-    # Перевірка терміну доступу
+    # Перевірка терміну доступу (діє включно з датою access_until)
     access_until = data.get("access_until")
     if not access_until:
         return username_base, False, "no access"
-    try:
-        if datetime.now() > datetime.strptime(str(access_until), "%Y-%m-%d"):
-            return username_base, False, f"expired ({access_until})"
-    except ValueError:
-        return username_base, False, f"bad access_until: {access_until}"
+    if not access_active(data):
+        return username_base, False, f"expired ({access_until})"
 
     # Перевірка розкладу роботи
     if not is_in_schedule(data):
@@ -162,6 +177,7 @@ async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional
     try:
         await client.connect()
         if not await client.is_user_authorized():
+            LAST_PROBLEMS[username_base] = [(None, "session")]
             return username_base, False, "session not authorized"
 
         # ── Глобальний медіа-дефолт (файл, завантажений вручну) ──
@@ -258,7 +274,7 @@ async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional
                                 if chosen:
                                     await _send_media_no_fwd(client, entity, chosen)
                                     mark_target_forward_used(data, pid, mode, chosen.id, len(msgs))
-                                    save_user_json(json_path, data)
+                                    record_forward_used(json_path, pid, mode, chosen.id, len(msgs))
                                     log.info("[%s] fwd-roundrobin → pid=%d  src=%s  msg_id=%d",
                                              username_base, pid, src.get("title", src_chat_id), chosen.id)
                                     sent += 1
@@ -336,6 +352,8 @@ async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional
                 failures.append(f"{pid}:{type(e).__name__}")
                 log.warning("[%s] Error pid=%d: %s", username_base, pid, e)
 
+        if failures:
+            LAST_PROBLEMS[username_base] = _parse_failures(failures)
         if sent == 0:
             return username_base, False, f"none sent ({', '.join(failures[:3]) or 'unknown'})"
         if failures:
@@ -345,14 +363,21 @@ async def _send_for_user(json_path: str, mode: str) -> tuple[str, bool, Optional
         return username_base, True, None
 
     except RPCError as e:
+        LAST_PROBLEMS[username_base] = [(None, e.__class__.__name__)]
         return username_base, False, f"RPCError {e.__class__.__name__}: {e}"
     except Exception as e:
+        LAST_PROBLEMS[username_base] = [(None, type(e).__name__)]
         return username_base, False, f"{type(e).__name__}: {e}"
     finally:
         try:
             await client.disconnect()
         except Exception:
             pass
+
+
+# Підсумок останньої розсилки — для адмін-панелі (в памʼяті, до рестарту).
+# {"mode": str, "at": datetime, "results": {user_id: (success, reason)}}
+LAST_RUN: dict = {}
 
 
 async def broadcast_for_all_users(mode: str) -> tuple[int, int]:
@@ -368,6 +393,11 @@ async def broadcast_for_all_users(mode: str) -> tuple[int, int]:
         *[_send_for_user(jp, mode) for jp in json_files],
         return_exceptions=False,
     )
+
+    LAST_RUN.clear()
+    LAST_RUN.update(mode=mode, at=datetime.now(), results={
+        name: (success, err) for name, success, err in results
+    })
 
     ok = 0
     for username, success, err in results:

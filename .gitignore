@@ -10,3 +10,7 @@ __pycache__/
 *.session-journal
 sad.py
 .DS_Store
+processed_payments.json
+fsm_state.json
+.env.bak-*
+backups/

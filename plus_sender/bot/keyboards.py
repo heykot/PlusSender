@@ -1,44 +1,64 @@
 """Клавіатури (Reply + Inline)."""
 from __future__ import annotations
 
-from typing import Optional
-
 from aiogram import types
 
 from ..config import (
     BTN_BROADCAST,
+    BTN_CHOOSE_CHATS,
     BTN_CANCEL,
     BTN_CONNECT,
-    BTN_DISABLE_TEXT,
+    BTN_CONNECT_QR,
     BTN_HELP,
+    BTN_MORE,
+    BTN_OWN_KEYS,
     BTN_PAYMENT,
     BTN_PROFILE,
     BTN_REFERRAL,
-    BTN_START,
-    BTN_STATUS_PREFIX,
-    BTN_STOP,
     BTN_SUPPORT,
+    BTN_TURN_OFF,
+    BTN_TURN_ON,
 )
-from ..storage import get_status
-from ..utils import status_label, truncate
+from ..storage import get_targets, has_session, load_user
+from ..utils import truncate
 
 
 # ===================== REPLY-клавіатури =====================
 def main_menu_kb(user: types.User) -> types.ReplyKeyboardMarkup:
-    active = get_status(user)
-    status_btn = f"{BTN_STATUS_PREFIX} {status_label(active)}"
+    """Головне меню залежить від етапу: спершу одна головна дія
+    (підключити → обрати чати), далі — робоче меню з перемикачем."""
+    data = load_user(user)
+    B = types.KeyboardButton
+    bottom = [B(text=BTN_PROFILE), B(text=BTN_PAYMENT), B(text=BTN_MORE)]
+
+    if not has_session(user):
+        rows = [[B(text=BTN_CONNECT)], [B(text=BTN_PAYMENT), B(text=BTN_MORE)]]
+        placeholder = "Почніть з «🔌 Підключити»"
+    elif not get_targets(data):
+        rows = [[B(text=BTN_CHOOSE_CHATS)], bottom]
+        placeholder = "Далі — оберіть чати"
+    else:
+        toggle = BTN_TURN_OFF if data.get("status") else BTN_TURN_ON
+        rows = [[B(text=BTN_BROADCAST)], [B(text=toggle)], bottom]
+        placeholder = "Оберіть дію…"
+
     return types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text=BTN_BROADCAST)],
-            [types.KeyboardButton(text=BTN_START), types.KeyboardButton(text=BTN_STOP)],
-            [types.KeyboardButton(text=BTN_CONNECT), types.KeyboardButton(text=BTN_PROFILE)],
-            [types.KeyboardButton(text=BTN_PAYMENT), types.KeyboardButton(text=BTN_REFERRAL)],
-            [types.KeyboardButton(text=BTN_SUPPORT), types.KeyboardButton(text=BTN_HELP)],
-            [types.KeyboardButton(text=status_btn)],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
-        input_field_placeholder="Оберіть дію або введіть команду…",
+        input_field_placeholder=placeholder,
     )
+
+
+def more_menu_kb(connected: bool) -> types.InlineKeyboardMarkup:
+    """Рідковживані розділи — під кнопкою «☰ Ще»."""
+    I = types.InlineKeyboardButton
+    rows = [
+        [I(text=BTN_REFERRAL, callback_data="more:referral")],
+        [I(text=BTN_SUPPORT, callback_data="more:support"), I(text=BTN_HELP, callback_data="more:help")],
+    ]
+    if connected:
+        rows.append([I(text="🔌 Перепідключити Telegram", callback_data="more:connect")])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def cancel_kb() -> types.ReplyKeyboardMarkup:
@@ -46,182 +66,6 @@ def cancel_kb() -> types.ReplyKeyboardMarkup:
         keyboard=[[types.KeyboardButton(text=BTN_CANCEL)]],
         resize_keyboard=True,
     )
-
-
-def text_input_kb() -> types.ReplyKeyboardMarkup:
-    return types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text=BTN_DISABLE_TEXT)],
-            [types.KeyboardButton(text=BTN_CANCEL)],
-        ],
-        resize_keyboard=True,
-    )
-
-
-# ===================== INLINE — вибір чатів для розсилки =====================
-def broadcast_settings_kb(
-    items: list[dict],
-    selected: list[int],
-) -> types.InlineKeyboardMarkup:
-    selected_set = set(selected)
-    rows: list[list[types.InlineKeyboardButton]] = []
-    row: list[types.InlineKeyboardButton] = []
-
-    for it in items[:24]:
-        pid = int(it["pid"])
-        mark = "✅" if pid in selected_set else "⬜️"
-        u = f" @{it.get('username')}" if it.get("username") else ""
-        label = f"{mark} {truncate((it.get('title') or '—') + u, 24)}"
-        row.append(types.InlineKeyboardButton(text=label, callback_data=f"bset:toggle:{pid}"))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-
-    rows.append([types.InlineKeyboardButton(text="🔍 Пошук чату", callback_data="bset:search")])
-    rows.append([types.InlineKeyboardButton(text="⚙️ Налаштування кожного чату", callback_data="bset:chatsettings")])
-    rows.append([types.InlineKeyboardButton(text="⏰ Час роботи", callback_data="bset:schedule")])
-    rows.append([
-        types.InlineKeyboardButton(text="📊 Поточний стан", callback_data="bset:show"),
-        types.InlineKeyboardButton(text="🗑 Скинути чати", callback_data="bset:clear"),
-    ])
-    rows.append([types.InlineKeyboardButton(text="✅ Зберегти та закрити", callback_data="bset:done")])
-    return types.InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-# ===================== INLINE — список чатів для per-target налаштувань =====================
-def target_list_kb(
-    targets: list[int],
-    titles: dict[int, str],
-    configs: dict[int, dict],          # {pid: {"alert_type": ..., "clear_type": ...}}
-) -> tuple[types.InlineKeyboardMarkup, dict[str, int]]:
-    """Повертає (клавіатура, mapping key→pid)."""
-    mapping: dict[str, int] = {}
-    rows: list[list[types.InlineKeyboardButton]] = []
-    row: list[types.InlineKeyboardButton] = []
-
-    for idx, pid in enumerate(targets[:24], start=1):
-        title = truncate(titles.get(pid, str(pid)), 22)
-        cfg = configs.get(pid) or {}
-        a_type = cfg.get("alert_type")
-        c_type = cfg.get("clear_type")
-        if a_type and c_type:
-            mark = "⚙️"   # обидва налаштовані
-        elif a_type or c_type:
-            mark = "📝"   # один налаштований
-        else:
-            mark = "↩️"   # дефолт
-        key = str(idx)
-        mapping[key] = pid
-        row.append(types.InlineKeyboardButton(
-            text=f"{mark} {title}",
-            callback_data=f"bset:textchat:{key}",
-        ))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-
-    rows.append([types.InlineKeyboardButton(text="↩️ Назад до налаштувань", callback_data="bset:textdone")])
-    return types.InlineKeyboardMarkup(inline_keyboard=rows), mapping
-
-
-# ===================== INLINE — налаштування конкретного чату =====================
-def _type_icon(type_str: Optional[str]) -> str:
-    return {"text": "✍️", "forward": "🎥", "none": "🚫"}.get(type_str or "", "↩️")
-
-
-def target_chat_kb(
-    alert_type: Optional[str],      # "text" | "forward" | "none" | None
-    alert_hint: Optional[str],      # короткий опис поточного значення
-    alert_delay: int,
-    clear_type: Optional[str],
-    clear_hint: Optional[str],
-    clear_delay: int,
-) -> types.InlineKeyboardMarkup:
-    rows: list[list[types.InlineKeyboardButton]] = []
-
-    # Кнопка тривоги
-    a_icon = _type_icon(alert_type)
-    a_label = f"🚨 Тривога  {a_icon}"
-    if alert_hint:
-        a_label += f"  {truncate(alert_hint, 20)}"
-    if alert_type not in (None, "none"):
-        a_label += f"  ⏱{alert_delay}с"
-    rows.append([types.InlineKeyboardButton(text=a_label, callback_data="bset:tc_a")])
-
-    # Кнопка відбою
-    c_icon = _type_icon(clear_type)
-    c_label = f"✅ Відбій  {c_icon}"
-    if clear_hint:
-        c_label += f"  {truncate(clear_hint, 20)}"
-    if clear_type not in (None, "none"):
-        c_label += f"  ⏱{clear_delay}с"
-    rows.append([types.InlineKeyboardButton(text=c_label, callback_data="bset:tc_c")])
-
-    rows.append([
-        types.InlineKeyboardButton(text="🗑 Скинути до дефолту", callback_data="bset:tc_reset"),
-        types.InlineKeyboardButton(text="↩️ До списку", callback_data="bset:tc_back"),
-    ])
-    return types.InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-# ===================== INLINE — вибір типу повідомлення для режиму =====================
-def target_mode_type_kb(
-    mode: str,
-    current_type: Optional[str],
-    source_title: Optional[str] = None,
-) -> types.InlineKeyboardMarkup:
-    """Клавіатура вибору: текст / пересилати / не надсилати."""
-    rows: list[list[types.InlineKeyboardButton]] = []
-
-    def _check(t: str) -> str:
-        return "✅ " if current_type == t else ""
-
-    rows.append([types.InlineKeyboardButton(
-        text=f"{_check('text')}✍️ Текст",
-        callback_data=f"bset:tc_type:{mode}:text",
-    )])
-
-    fwd_label = f"{_check('forward')}🎥 Кружок з чату"
-    if source_title and current_type == "forward":
-        fwd_label += f"  ({truncate(source_title, 18)})"
-    rows.append([types.InlineKeyboardButton(
-        text=fwd_label,
-        callback_data=f"bset:tc_type:{mode}:forward",
-    )])
-
-    rows.append([types.InlineKeyboardButton(
-        text=f"{_check('none')}🚫 Не надсилати",
-        callback_data=f"bset:tc_type:{mode}:none",
-    )])
-
-    rows.append([types.InlineKeyboardButton(
-        text="↩️ Назад",
-        callback_data="bset:tc_modeback",
-    )])
-    return types.InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-# ===================== INLINE — режим надсилання кружків =====================
-def forward_mode_kb(mode: str, current_fwd_mode: str = "roundrobin") -> types.InlineKeyboardMarkup:
-    """🔄 По колу / 🗑 Відправив → видалив."""
-    def _check(m: str) -> str:
-        return "✅ " if current_fwd_mode == m else ""
-
-    return types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(
-            text=f"{_check('roundrobin')}🔄 По колу",
-            callback_data=f"bset:tc_fwd_mode:{mode}:roundrobin",
-        )],
-        [types.InlineKeyboardButton(
-            text=f"{_check('delete')}🗑 Відправив → видалив",
-            callback_data=f"bset:tc_fwd_mode:{mode}:delete",
-        )],
-        [types.InlineKeyboardButton(text="↩️ Назад", callback_data="bset:tc_modeback")],
-    ])
 
 
 # ===================== INLINE — розклад роботи =====================
@@ -251,7 +95,7 @@ def schedule_kb(enabled: bool, from_time: str, to_time: str) -> types.InlineKeyb
             callback_data="sched:edit",
         )])
 
-    rows.append([types.InlineKeyboardButton(text="↩️ Назад", callback_data="bset:sched_back")])
+    rows.append([types.InlineKeyboardButton(text="‹ Назад", callback_data="st:home")])
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -259,9 +103,13 @@ def schedule_kb(enabled: bool, from_time: str, to_time: str) -> types.InlineKeyb
 def source_chat_select_kb(
     items: list[dict],
     mapping: dict[str, int],           # key → pid (заповнюється зовні)
+    back_cb: str,
 ) -> types.InlineKeyboardMarkup:
     """Список діалогів для вибору чату-джерела."""
-    rows: list[list[types.InlineKeyboardButton]] = []
+    rows: list[list[types.InlineKeyboardButton]] = [[types.InlineKeyboardButton(
+        text="➕ Створити новий чат для кружків",
+        callback_data="bset:tc_src_new",
+    )]]
     for key, pid in mapping.items():
         item = next((it for it in items if int(it["pid"]) == pid), None)
         if not item:
@@ -272,45 +120,57 @@ def source_chat_select_kb(
             text=f"{title}{u}",
             callback_data=f"bset:tc_src:{key}",
         )])
-    rows.append([types.InlineKeyboardButton(text="🔍 Пошук за назвою / ID", callback_data="bset:tc_src_search")])
-    rows.append([types.InlineKeyboardButton(text="↩️ Назад", callback_data="bset:tc_modeback")])
+    rows.append([
+        types.InlineKeyboardButton(text="🔍 Пошук", callback_data="bset:tc_src_search"),
+        types.InlineKeyboardButton(text="‹ Назад", callback_data=back_cb),
+    ])
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ===================== INLINE — wizard підключення =====================
-def connect_intro_kb() -> types.InlineKeyboardMarkup:
-    return types.InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                types.InlineKeyboardButton(
-                    text="🌐 Відкрити my.telegram.org",
-                    url="https://my.telegram.org/auth",
-                )
-            ],
-            [types.InlineKeyboardButton(text="🚀 Почати", callback_data="connect:start")],
-            [types.InlineKeyboardButton(text="↩️ Скасувати", callback_data="connect:cancel")],
-        ]
+def connect_phone_kb(own_keys: bool) -> types.ReplyKeyboardMarkup:
+    """Reply-клавіатура кроку телефону. Усі варіанти — тут, щоб крок
+    вміщався в одне повідомлення (request_contact можливий лише в reply-клавіатурі,
+    а reply та inline не можна прикріпити до одного повідомлення)."""
+    rows = [
+        [types.KeyboardButton(text="📱 Поділитися номером", request_contact=True)],
+        [types.KeyboardButton(text=BTN_CONNECT_QR)],
+    ]
+    if own_keys:
+        rows.append([types.KeyboardButton(text=BTN_OWN_KEYS)])
+    rows.append([types.KeyboardButton(text=BTN_CANCEL)])
+    return types.ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        input_field_placeholder="або введіть номер: +380…",
     )
 
 
-def connect_method_kb() -> types.InlineKeyboardMarkup:
-    """Вибір способу входу: код у застосунок або QR-код."""
-    return types.InlineKeyboardMarkup(
-        inline_keyboard=[
-            [types.InlineKeyboardButton(
-                text="🔢 Код / SMS (один телефон)",
-                callback_data="connect:method_code",
-            )],
-            [types.InlineKeyboardButton(
-                text="🔳 QR-код (є другий пристрій)",
-                callback_data="connect:method_qr",
-            )],
-            [types.InlineKeyboardButton(
-                text="↩️ Скасувати",
-                callback_data="connect:cancel",
-            )],
-        ]
-    )
+def code_keypad_kb(can_resend_sms: bool) -> types.InlineKeyboardMarkup:
+    """Цифрова клавіатура для коду входу.
+
+    Код набирається кнопками й не потрапляє в чат повідомленням: якщо
+    надіслати код текстом, Telegram вважає його «пересланим» і блокує вхід.
+    """
+    def d(n: str) -> types.InlineKeyboardButton:
+        return types.InlineKeyboardButton(text=n, callback_data=f"code:d:{n}")
+
+    rows = [
+        [d("1"), d("2"), d("3")],
+        [d("4"), d("5"), d("6")],
+        [d("7"), d("8"), d("9")],
+        [
+            types.InlineKeyboardButton(text="⌫", callback_data="code:back"),
+            d("0"),
+            types.InlineKeyboardButton(text="✅", callback_data="code:ok"),
+        ],
+    ]
+    if can_resend_sms:
+        rows.append([types.InlineKeyboardButton(
+            text="🔁 Код не прийшов — надіслати SMS",
+            callback_data="connect:resend_sms",
+        )])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def connect_qr_kb(login_url: str) -> types.InlineKeyboardMarkup:
@@ -364,94 +224,3 @@ def connect_existing_session_kb() -> types.InlineKeyboardMarkup:
             ],
         ]
     )
-
-
-# ===================== INLINE — admin =====================
-def admin_root_kb() -> types.InlineKeyboardMarkup:
-    return types.InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                types.InlineKeyboardButton(text="👥 Користувачі", callback_data="admin:users"),
-                types.InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
-            ],
-            [
-                types.InlineKeyboardButton(text="📨 Розсилка", callback_data="admin:broadcast"),
-                types.InlineKeyboardButton(text="👮 Адміни", callback_data="admin:admins"),
-            ],
-            [
-                types.InlineKeyboardButton(text="🧪 Тест тривоги", callback_data="admin:test_alert"),
-                types.InlineKeyboardButton(text="🧪 Тест відбою", callback_data="admin:test_clear"),
-            ],
-        ]
-    )
-
-
-def admin_user_list_kb(
-    users: dict[int, dict],
-    page: int = 0,
-    page_size: int = 10,
-) -> types.InlineKeyboardMarkup:
-    """Список юзерів з пагінацією."""
-    items = list(users.items())
-    total = len(items)
-    start = page * page_size
-    chunk = items[start: start + page_size]
-    rows: list[list[types.InlineKeyboardButton]] = []
-
-    for uid, data in chunk:
-        uname = data.get("user_name") or f"id{uid}"
-        active = "🟢" if data.get("status") else "🔴"
-        access = str(data.get("access_until") or "—")[:10]
-        rows.append([types.InlineKeyboardButton(
-            text=f"{active} @{uname}  [{access}]",
-            callback_data=f"admu:view:{uid}",
-        )])
-
-    nav: list[types.InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(types.InlineKeyboardButton(text="◀️", callback_data=f"admu:page:{page-1}"))
-    if start + page_size < total:
-        nav.append(types.InlineKeyboardButton(text="▶️", callback_data=f"admu:page:{page+1}"))
-    if nav:
-        rows.append(nav)
-
-    rows.append([types.InlineKeyboardButton(text="↩️ Назад", callback_data="admin:back")])
-    return types.InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def admin_user_detail_kb(uid: int, active: bool) -> types.InlineKeyboardMarkup:
-    """Дії над конкретним користувачем."""
-    toggle_text = "❌ Вимкнути" if active else "✅ Увімкнути"
-    toggle_cb = f"admu:disable:{uid}" if active else f"admu:enable:{uid}"
-    return types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb),
-            types.InlineKeyboardButton(text="📨 Написати", callback_data=f"admu:msg:{uid}"),
-        ],
-        [
-            types.InlineKeyboardButton(text="➕30 дн.", callback_data=f"admu:add30:{uid}"),
-            types.InlineKeyboardButton(text="➕90 дн.", callback_data=f"admu:add90:{uid}"),
-            types.InlineKeyboardButton(text="➕365 дн.", callback_data=f"admu:add365:{uid}"),
-        ],
-        [
-            types.InlineKeyboardButton(text="📅 Встановити дату", callback_data=f"admu:setdate:{uid}"),
-            types.InlineKeyboardButton(text="🚫 Забрати доступ", callback_data=f"admu:revoke:{uid}"),
-        ],
-        [
-            types.InlineKeyboardButton(text="🗑 Видалити профіль", callback_data=f"admu:delete:{uid}"),
-        ],
-        [types.InlineKeyboardButton(text="↩️ До списку", callback_data="admin:users")],
-    ])
-
-
-def admin_admins_kb(admins: dict[int, str]) -> types.InlineKeyboardMarkup:
-    """Список адмінів з можливістю видалення."""
-    rows: list[list[types.InlineKeyboardButton]] = []
-    for uid, uname in admins.items():
-        rows.append([types.InlineKeyboardButton(
-            text=f"👮 @{uname or '—'}  ({uid})  🗑",
-            callback_data=f"adma:del:{uid}",
-        )])
-    rows.append([types.InlineKeyboardButton(text="➕ Додати адміна", callback_data="adma:add")])
-    rows.append([types.InlineKeyboardButton(text="↩️ Назад", callback_data="admin:back")])
-    return types.InlineKeyboardMarkup(inline_keyboard=rows)

@@ -2,31 +2,128 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import tempfile
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Iterator, Optional
 
 from aiogram import types
 
-from .config import ADMINS_FILE, USERS_DIR, SESSIONS_DIR
+from .config import ADMINS_FILE, PAYMENTS_FILE, USERS_DIR, SESSIONS_DIR
 from .utils import (
-    safe_username_from,
     normalize_optional_text,
     normalize_delay_seconds,
 )
 
+log = logging.getLogger(__name__)
+
 
 # ===================== Шляхи до файлів =====================
+# Профіль і сесія прив'язані до незмінного Telegram user_id, а не до @username:
+# username можна змінити або звільнити, і тоді новий власник отримав би
+# чужий профіль та чужу Telethon-сесію.
+def user_file_path_for_id(user_id: int) -> str:
+    return os.path.join(USERS_DIR, f"{int(user_id)}.json")
+
+
+def session_path_for_id(user_id: int) -> str:
+    return os.path.join(SESSIONS_DIR, str(int(user_id)))
+
+
+def session_file_path_for_id(user_id: int) -> str:
+    return f"{session_path_for_id(user_id)}.session"
+
+
 def user_file_path(user: types.User) -> str:
-    return os.path.join(USERS_DIR, f"{safe_username_from(user)}.json")
+    return user_file_path_for_id(user.id)
 
 
 def session_path(user: types.User) -> str:
-    return os.path.join(SESSIONS_DIR, safe_username_from(user))
+    return session_path_for_id(user.id)
 
 
 def session_file_path(user: types.User) -> str:
-    return f"{session_path(user)}.session"
+    return session_file_path_for_id(user.id)
+
+
+def has_session(user: types.User) -> bool:
+    return os.path.isfile(session_file_path(user))
+
+
+_SESSION_SUFFIXES = (".session", ".session-journal", ".session-wal", ".session-shm")
+
+
+def _move_session_files(old_stem: str, new_dir: Path, new_stem: str) -> None:
+    for suffix in _SESSION_SUFFIXES:
+        src = Path(SESSIONS_DIR) / f"{old_stem}{suffix}"
+        if src.exists():
+            new_dir.mkdir(parents=True, exist_ok=True)
+            os.replace(src, new_dir / f"{new_stem}{suffix}")
+
+
+def migrate_profiles_to_user_id() -> None:
+    """Одноразова міграція `user_data/<username>.json` → `user_data/<user_id>.json`
+    (і відповідних .session-файлів).
+
+    Якщо в одного user_id кілька профілів (користувач міняв username), основним
+    стає той, де є сесія (далі — найсвіжіший); з інших підтягуються найпізніший
+    access_until і реферальні поля, а самі файли переносяться в `_legacy/`.
+    """
+    users_dir = Path(USERS_DIR)
+    if not users_dir.is_dir():
+        return
+
+    groups: dict[int, list[Path]] = {}
+    for path in users_dir.glob("*.json"):
+        data = load_user_json(str(path))
+        raw_uid = data.get("user_id")
+        if not raw_uid and path.stem.startswith("user_"):
+            raw_uid = path.stem[len("user_"):]
+        try:
+            uid = int(raw_uid)
+        except (TypeError, ValueError):
+            log.warning("migrate: %s без user_id — пропускаю", path.name)
+            continue
+        groups.setdefault(uid, []).append(path)
+
+    legacy_users = users_dir / "_legacy"
+    legacy_sessions = Path(SESSIONS_DIR) / "_legacy"
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+    for uid, paths in groups.items():
+        target = users_dir / f"{uid}.json"
+        if paths == [target]:
+            continue
+
+        def _rank(p: Path) -> tuple[bool, float]:
+            has_sess = (Path(SESSIONS_DIR) / f"{p.stem}.session").is_file()
+            return has_sess, p.stat().st_mtime
+
+        primary = max(paths, key=_rank)
+        merged = load_user_json(str(primary))
+        merged["user_id"] = uid
+
+        for other in paths:
+            if other == primary:
+                continue
+            od = load_user_json(str(other))
+            if (get_access_until(od) or datetime.min) > (get_access_until(merged) or datetime.min):
+                merged["access_until"] = od["access_until"]
+            for key in ("referrer_id", "referral_rewarded"):
+                if od.get(key) and not merged.get(key):
+                    merged[key] = od[key]
+            legacy_users.mkdir(parents=True, exist_ok=True)
+            os.replace(other, legacy_users / f"{other.stem}.{stamp}.json")
+            _move_session_files(other.stem, legacy_sessions, f"{other.stem}.{stamp}")
+            log.warning("migrate: uid=%d дублікат %s → _legacy/", uid, other.name)
+
+        save_user_json(str(target), merged)
+        if primary != target:
+            primary.unlink(missing_ok=True)
+            _move_session_files(primary.stem, Path(SESSIONS_DIR), str(uid))
+            log.info("migrate: %s → %s", primary.name, target.name)
 
 
 # ===================== Базове R/W =====================
@@ -40,10 +137,26 @@ def load_user_json(path: str) -> dict:
         return {}
 
 
+def _atomic_write_json(path: str, data, indent: Optional[int], default=None) -> None:
+    """Пише JSON через тимчасовий файл + os.replace, щоб падіння посеред
+    запису не лишило битий файл."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-", suffix=".json.part")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=indent, default=default)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_user_json(path: str, data: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    _atomic_write_json(path, data, indent=4)
 
 
 def load_user(user: types.User) -> dict:
@@ -429,11 +542,24 @@ def get_access_until(data: dict) -> Optional[datetime]:
         return None
 
 
-def has_access(user: types.User) -> bool:
-    until = get_access_until(load_user(user))
+def access_days_left(data: dict) -> Optional[int]:
+    """Скільки днів доступу лишилось: 0 — сьогодні останній день; None — доступу немає.
+
+    Доступ діє ВКЛЮЧНО з датою access_until: «до 26.10» означає весь день 26.10.
+    """
+    until = get_access_until(data)
     if not until:
-        return False
-    return datetime.now() <= until
+        return None
+    left = (until.date() - datetime.now().date()).days
+    return left if left >= 0 else None
+
+
+def access_active(data: dict) -> bool:
+    return access_days_left(data) is not None
+
+
+def has_access(user: types.User) -> bool:
+    return access_active(load_user(user))
 
 
 def set_access_for_user_id(user_id: int, date_str: str) -> bool:
@@ -523,7 +649,8 @@ def extend_access_days(user_id: int, days: int) -> Optional[str]:
             current = data.get("access_until")
             try:
                 base = datetime.strptime(str(current), "%Y-%m-%d")
-                if base < datetime.now():
+                # Доступ діє включно з датою: прострочений — рахуємо від сьогодні
+                if base.date() < datetime.now().date():
                     base = datetime.now()
             except (ValueError, TypeError):
                 base = datetime.now()
@@ -532,6 +659,14 @@ def extend_access_days(user_id: int, days: int) -> Optional[str]:
             save_user_json(path, data)
             return until
     return None
+
+
+def ensure_profile_for_id(user_id: int) -> None:
+    """Створює мінімальний профіль, якщо користувач ще не натискав /start
+    (наприклад, оплатив раніше), щоб видане право доступу не загубилось."""
+    path = user_file_path_for_id(user_id)
+    if not os.path.isfile(path):
+        save_user_json(path, {"user_id": int(user_id)})
 
 
 def load_all_users() -> dict[int, dict]:
@@ -684,6 +819,20 @@ def mark_target_forward_used(data: dict, pid: int, mode: str, msg_id: int, total
     set_target_messages(data, tms)
 
 
+def record_forward_used(json_path: str, pid: int, mode: str, msg_id: int, total: int) -> None:
+    """Зберігає відправлений кружок, перечитавши профіль з диска.
+
+    Розсилка тримає копію профілю від свого старту і може чекати затримку
+    хвилинами — якщо записати ту копію, пропадуть зміни, які користувач
+    зробив у боті за цей час. Тому оновлюємо лише лічильник у свіжих даних.
+    """
+    fresh = load_user_json(json_path)
+    if not fresh:
+        return
+    mark_target_forward_used(fresh, pid, mode, msg_id, total)
+    save_user_json(json_path, fresh)
+
+
 def reset_target_config(data: dict, pid: int) -> None:
     """Повністю скидає індивідуальні налаштування чату."""
     tms = get_target_messages(data)
@@ -708,7 +857,9 @@ def set_referrer(user: types.User, referrer_id: int) -> bool:
     """Зберігає referrer_id у профілі.
 
     Правила:
-      • Тільки якщо профіль користувача ще НЕ існує (новий користувач).
+      • Тільки для нового користувача: профілю ще немає або доступ ще жодного
+        разу не видавався. Інакше вже платний клієнт міг би «прив'язатися» до
+        друга, і той отримав би бонус за продовження, а не за першу покупку.
       • Заборонено self-referral.
       • Якщо referrer_id вже встановлений — не перезаписуємо.
 
@@ -721,7 +872,7 @@ def set_referrer(user: types.User, referrer_id: int) -> bool:
     if os.path.isfile(path):
         # Профіль уже існує — не дозволяємо змінювати реферера
         data = load_user_json(path)
-        if data.get("referrer_id"):
+        if data.get("referrer_id") or data.get("access_until"):
             return False
         data["referrer_id"] = int(referrer_id)
         save_user_json(path, data)
@@ -765,6 +916,26 @@ def count_referrals_for(referrer_id: int) -> tuple[int, int]:
             if data.get("referral_rewarded"):
                 paid += 1
     return total, paid
+
+
+# ===================== Оброблені платежі =====================
+def _load_processed_payments() -> dict[str, dict]:
+    try:
+        with open(PAYMENTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+
+
+def is_payment_processed(item_id: str) -> bool:
+    return str(item_id) in _load_processed_payments()
+
+
+def mark_payment_processed(item_id: str, **info) -> None:
+    payments = _load_processed_payments()
+    payments[str(item_id)] = {"at": datetime.now().isoformat(timespec="seconds"), **info}
+    _atomic_write_json(str(PAYMENTS_FILE), payments, indent=2)
 
 
 # ===================== Адміни =====================

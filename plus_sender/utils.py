@@ -223,7 +223,8 @@ def access_status_line(value: object) -> str:
     dt = parse_access_until(value)
     if dt is None:
         return "— не встановлено —"
-    days = (dt - datetime.now()).days
+    # Доступ діє включно з датою
+    days = (dt.date() - datetime.now().date()).days
     if days >= 0:
         return f"{dt:%Y-%m-%d} ({days} дн.)"
     return f"закінчився {dt:%Y-%m-%d}"

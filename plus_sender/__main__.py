@@ -15,10 +15,13 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
 from .alarm import AlarmMonitor
+from .bot.fsm_storage import JsonFileStorage
 from .bot.handlers import register as register_handlers
 from .config import PROJECT_ROOT, Settings, ensure_runtime_dirs
+from .storage import migrate_profiles_to_user_id
+from . import sender
+from .notifier import notify_admins, notify_broadcast_problems, run_daily_jobs
 from .sender import broadcast_for_all_users
 
 LOGS_DIR = PROJECT_ROOT / "logs"
@@ -98,28 +101,84 @@ def _configure_logging() -> None:
     logging.getLogger("aiohttp.web").addFilter(_DropScannerNoise())
 
 
-async def _on_alarm_change(mode: str) -> None:
-    """Колбек, який викликає alarm-monitor при зміні стану."""
+def _alarm_callbacks(bot):
+    """Колбеки alarm-monitor: розсилка на зміну стану + сповіщення про збої API."""
     log = logging.getLogger("alarm-callback")
-    if mode == "alert":
-        log.info("⚠️ УВАГА! Почалася повітряна тривога — запускаю розсилку (alert).")
-    else:
-        log.info("✅ Тривогу скасовано — запускаю розсилку (clear).")
-    try:
-        await broadcast_for_all_users(mode)
-    except Exception:
-        log.exception("Помилка під час розсилки")
+
+    async def on_change(mode: str) -> None:
+        if mode == "alert":
+            log.info("⚠️ УВАГА! Почалася повітряна тривога — запускаю розсилку (alert).")
+        else:
+            log.info("✅ Тривогу скасовано — запускаю розсилку (clear).")
+        try:
+            await broadcast_for_all_users(mode)
+        except Exception:
+            log.exception("Помилка під час розсилки")
+            return
+        try:
+            await notify_broadcast_problems(bot, mode, dict(sender.LAST_PROBLEMS))
+        except Exception:
+            log.exception("Помилка сповіщень після розсилки")
+
+    async def on_api_down(minutes: int) -> None:
+        await notify_admins(bot, (
+            f"🚨  <b>API тривог не відповідає вже {minutes} хв</b>\n\n"
+            f"Поки воно лежить, бот <b>не бачить</b> тривог і нічого не розсилає. "
+            f"Перевірте ALARM_API_KEY і стан api.ukrainealarm.com."
+        ))
+
+    async def on_api_up(minutes: int) -> None:
+        await notify_admins(bot, f"✅  API тривог знову відповідає (не працювало ~{minutes} хв).")
+
+    return on_change, on_api_down, on_api_up
+
+
+async def _resume_interrupted_steps(bot, storage: JsonFileStorage, log) -> None:
+    """Після рестарту більшість кроків (ввід тексту, часу, пошук) просто
+    продовжуються. А от підключення Telegram посеред коду/пароля/QR —
+    ні: зʼєднання, через яке запитано код, жило в памʼяті. Таким
+    користувачам пишемо, що треба почати заново, замість мовчання."""
+    from types import SimpleNamespace
+
+    from .bot.keyboards import main_menu_kb
+    from .bot.states import ConnectStates
+
+    lost = {ConnectStates.waiting_code.state, ConnectStates.waiting_password.state, ConnectStates.waiting_qr.state}
+    for chat_id, user_id, state in list(storage.active()):
+        if state not in lost:
+            continue
+        storage.drop(chat_id, user_id)
+        try:
+            await bot.send_message(
+                chat_id,
+                "🔄  <b>Бот щойно перезапустився</b>, і підключення Telegram перервалось.\n"
+                "Натисніть «🔌 Підключити», щоб почати заново — це хвилина.",
+                reply_markup=main_menu_kb(SimpleNamespace(id=user_id)),
+            )
+        except Exception as exc:
+            log.info("resume: не вдалося написати %d: %s", user_id, exc)
+        log.info("resume: перерване підключення uid=%d (%s) — попереджено", user_id, state)
 
 
 async def _run_mono_server(bot, settings: Settings, log) -> None:
     """Запускає aiohttp-сервер для Monobank webhook (якщо MONO_TOKEN задано)."""
     if not settings.mono_token:
         return
+    if not settings.mono_webhook_secret:
+        log.error(
+            "❌ MONO_TOKEN задано, але MONO_WEBHOOK_SECRET порожній — webhook-сервер "
+            "НЕ запущено, оплати не зараховуватимуться автоматично. "
+            "Згенеруйте секрет: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+        )
+        return
+    if not settings.mono_jar_id:
+        log.error("❌ MONO_JAR_ID не задано — webhook-сервер НЕ запущено.")
+        return
 
     from aiohttp import web
     from .mono_webhook import build_app, register_webhook
 
-    app = build_app(bot, settings.mono_jar_id)
+    app = build_app(bot, settings)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", settings.mono_webhook_port)
@@ -127,10 +186,9 @@ async def _run_mono_server(bot, settings: Settings, log) -> None:
     log.info("🌐 Monobank webhook сервер запущено на порту %d", settings.mono_webhook_port)
 
     # Автореєстрація webhook якщо задано MONO_WEBHOOK_URL
-    import os
-    webhook_url = (os.getenv("MONO_WEBHOOK_URL") or "").strip()
-    if webhook_url:
-        await register_webhook(settings.mono_token, webhook_url)
+    if settings.mono_webhook_url:
+        base = settings.mono_webhook_url.rstrip("/")
+        await register_webhook(settings.mono_token, f"{base}/{settings.mono_webhook_secret}")
 
 
 async def main() -> None:
@@ -139,6 +197,7 @@ async def main() -> None:
 
     settings = Settings.load()
     ensure_runtime_dirs()
+    migrate_profiles_to_user_id()
 
     # ── Проксі (необов'язково) ──
     session: AiohttpSession | None = None
@@ -162,11 +221,15 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         **({"session": session} if session else {}),
     )
-    dp = Dispatcher(storage=MemoryStorage())
+    fsm_storage = JsonFileStorage(PROJECT_ROOT / "fsm_state.json")
+    await _resume_interrupted_steps(bot, fsm_storage, log)
+    dp = Dispatcher(storage=fsm_storage)
     register_handlers(dp)
 
-    monitor = AlarmMonitor(settings, on_change=_on_alarm_change)
+    on_change, on_api_down, on_api_up = _alarm_callbacks(bot)
+    monitor = AlarmMonitor(settings, on_change=on_change, on_api_down=on_api_down, on_api_up=on_api_up)
     monitor.start()
+    daily = asyncio.create_task(run_daily_jobs(bot), name="daily-jobs")
 
     # ── Monobank webhook сервер (якщо налаштовано) ──
     await _run_mono_server(bot, settings, log)
@@ -176,6 +239,7 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         log.info("⏹ Зупинка…")
+        daily.cancel()
         await monitor.stop()
         await bot.session.close()
 

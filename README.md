@@ -49,6 +49,22 @@ python -m plus_sender
 python run.py
 ```
 
+## Деплой
+
+Бот працює на сервері як systemd-сервіс `plussender` (код у `~/PlusSender`).
+Оновлення — через git:
+
+```bash
+git push origin main
+bash scripts/deploy.sh
+```
+
+`scripts/deploy.sh` підтягує `origin/main` на сервері (лише fast-forward; зупиняється,
+якщо там є незакомічені зміни), оновлює залежності та перезапускає бота.
+
+* Бекапи: `scripts/backup.py` щодня о 04:30 (cron) → `~/backups/PlusSender-auto-*.tgz`, зберігаються 14 останніх.
+* HTTPS для Monobank webhook без власного домену: `deploy/setup_webhook_nipio.sh` (nip.io + Caddy).
+
 ## Що нового у 2.0 (порівняно з оригінальним TGSender)
 
 **Архітектура**
@@ -87,11 +103,8 @@ JSON-формат користувацьких профілів збережен
 | `/connect`          | Майстер підключення сесії                      |
 | `/on`, `/off`       | Увімкнути / вимкнути авто-розсилку             |
 | `/cancel`           | Скасувати поточний крок майстра                |
-| `/admin`            | Адмін-панель (тільки для адмінів)              |
+| `/admin`            | Адмін-панель: користувачі, оплати, розсилка, адміни |
 | `/access UID YYYY-MM-DD` | Видати доступ до дати (адмін)             |
-| `/admin_add UID`    | Додати адміна                                  |
-| `/admin_del UID`    | Видалити адміна                                |
-| `/admin_list`       | Список адмінів                                 |
 
 ## Змінні оточення
 
@@ -101,3 +114,5 @@ JSON-формат користувацьких профілів збережен
 | `ALARM_API_KEY`      | Ключ <https://api.ukrainealarm.com/>           |
 | `ALARM_REGION_ID`    | ID регіону (за замовч. `31` — Київ)            |
 | `ALARM_POLL_INTERVAL`| Період опитування API в секундах (default 10)  |
+| `TG_API_ID`, `TG_API_HASH` | Спільні ключі застосунку з my.telegram.org. Якщо задані — користувачам не треба вводити свої |
+| `MONO_WEBHOOK_SECRET` | Секрет у шляху webhook-а `/mono-webhook/<secret>` (обовʼязковий, якщо задано `MONO_TOKEN`) |

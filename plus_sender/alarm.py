@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional
 
 import aiohttp
@@ -16,17 +17,35 @@ from .config import Settings
 log = logging.getLogger(__name__)
 
 AlertCallback = Callable[[str], Awaitable[None]]  # mode: "alert" | "clear"
+OutageCallback = Callable[[int], Awaitable[None]]  # хвилин без відповіді API
+
+API_DOWN_ALERT_AFTER = timedelta(minutes=10)
+
+# Запущений монітор — щоб адмін-панель могла показати поточний стан
+CURRENT: Optional["AlarmMonitor"] = None
 
 
 class AlarmMonitor:
     """Опитує API ukrainealarm.com і викликає callback на зміну стану."""
 
-    def __init__(self, settings: Settings, on_change: AlertCallback) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        on_change: AlertCallback,
+        on_api_down: Optional[OutageCallback] = None,
+        on_api_up: Optional[OutageCallback] = None,
+    ) -> None:
         self.settings = settings
         self.on_change = on_change
+        self.on_api_down = on_api_down
+        self.on_api_up = on_api_up
+        self._fail_since: Optional[datetime] = None
+        self._down_alerted = False
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._last_state: Optional[bool] = None
+        self.last_check: Optional[datetime] = None      # остання успішна відповідь API
+        self.last_change: Optional[datetime] = None     # коли востаннє змінився стан
         self.url = (
             f"https://api.ukrainealarm.com/api/v3/alerts/{settings.alarm_region_id}"
         )
@@ -63,6 +82,9 @@ class AlarmMonitor:
         async with aiohttp.ClientSession() as session:
             while not self._stop.is_set():
                 state = await self._fetch_active(session)
+                if state is not None:
+                    self.last_check = datetime.now()
+                await self._track_outage(state is not None)
 
                 if state is None:
                     log.info("📡 Перевірка тривоги → ⚠️  немає відповіді від API")
@@ -80,6 +102,7 @@ class AlarmMonitor:
                         except Exception:
                             log.exception("Помилка в callback alarm")
                     self._last_state = state
+                    self.last_change = datetime.now()
                 else:
                     status_str = "🚨 ТРИВОГА" if state else "🟢 СПОКІЙ"
                     log.info("📡 Перевірка тривоги → %s  (без змін)", status_str)
@@ -92,7 +115,36 @@ class AlarmMonitor:
                 except asyncio.TimeoutError:
                     pass
 
+    async def _track_outage(self, ok: bool) -> None:
+        """Після API_DOWN_ALERT_AFTER без відповіді — один раз кличемо on_api_down,
+        після відновлення — on_api_up."""
+        now = datetime.now()
+        if not ok:
+            self._fail_since = self._fail_since or now
+            if not self._down_alerted and now - self._fail_since >= API_DOWN_ALERT_AFTER:
+                self._down_alerted = True
+                log.error("API тривог не відповідає вже %s", now - self._fail_since)
+                if self.on_api_down:
+                    try:
+                        await self.on_api_down(int((now - self._fail_since).total_seconds() // 60))
+                    except Exception:
+                        log.exception("on_api_down")
+            return
+        if self._down_alerted and self.on_api_up:
+            try:
+                await self.on_api_up(int((now - self._fail_since).total_seconds() // 60))
+            except Exception:
+                log.exception("on_api_up")
+        self._fail_since = None
+        self._down_alerted = False
+
+    @property
+    def is_alert(self) -> Optional[bool]:
+        return self._last_state
+
     def start(self) -> None:
+        global CURRENT
+        CURRENT = self
         if self._task and not self._task.done():
             return
         self._stop.clear()
