@@ -34,6 +34,8 @@ from ...config import (
     TAGLINE,
 )
 from ...storage import (
+    access_days_left,
+    get_access_until,
     get_targets,
     has_access,
     has_session,
@@ -43,12 +45,9 @@ from ...storage import (
     set_status,
 )
 from ...utils import (
-    access_status_line,
     card,
     h,
     next_hint,
-    section,
-    status_badge,
     status_label,
     warm_greeting,
 )
@@ -107,52 +106,45 @@ async def cmd_start(
     connected = has_session(user)
     paid = has_access(user)
 
-    # ── Тепле привітання ──
     greeting = warm_greeting(user.first_name)
     ref_badge = (
         f"\n🎁  <i>Вас запросив друг — коли купите тариф, "
         f"він отримає +{REFERRAL_BONUS_DAYS} днів доступу.</i>"
         if just_referred else ""
     )
-    header = (
+
+    # ── Усе налаштовано: короткий статус замість інструкції ──
+    if connected and targets_count and paid and active:
+        until = get_access_until(data)
+        left = access_days_left(data)
+        tail = "сьогодні останній день" if left == 0 else f"ще {left} дн."
+        await msg.answer(
+            f"{greeting}{ref_badge}\n\n"
+            f"✅  <b>Все працює</b> — бот стежить за тривогою.\n"
+            f"💬 Чатів: <b>{targets_count}</b> · 📅 доступ до <b>{until:%d.%m.%Y}</b> ({tail})\n\n"
+            f"<i>Що надсилається — у «{BTN_BROADCAST}».</i>",
+            reply_markup=main_menu_kb(user),
+        )
+        return
+
+    # ── Новачок / не все зроблено: що це і які кроки лишились ──
+    def _step(done: bool, text: str) -> str:
+        return f"{'✅' if done else '▫️'}  {text}"
+
+    steps = "\n".join([
+        _step(connected, "① Підключити Telegram"),
+        _step(targets_count > 0, "② Обрати чати"),
+        _step(paid, "③ Оплатити доступ"),
+        _step(active, "④ Увімкнути"),
+    ])
+    text = (
         f"{greeting}{ref_badge}\n"
-        f"🤖  <b>{BRAND}</b>  <i>· {TAGLINE}</i>\n"
-        f"{DIV}"
+        f"🤖  <b>{BRAND}</b>  <i>· {TAGLINE}</i>\n{DIV}\n"
+        f"Коли в Києві <b>починається</b> або <b>закінчується</b> повітряна тривога, "
+        f"я сам надсилаю від вашого імені повідомлення у ваші чати.\n\n"
+        f"{steps}\n\n"
+        f"{_next_step_hint(connected, targets_count, paid, active)}"
     )
-
-    intro = (
-        "Я допомагаю вам <b>автоматично</b> надсилати повідомлення у ваші чати, "
-        "коли в Києві <b>починається</b> або <b>закінчується</b> повітряна тривога.\n"
-        "<i>Ви налаштовуєте — далі бот працює сам.</i>"
-    )
-
-    # ── Прогрес: кроки в тому ж порядку, що й меню ──
-    def _mark(done: bool) -> str:
-        return "✅" if done else "▫️"
-
-    quick_body = (
-        f"{_mark(connected)}  <b>① Підключити Telegram</b>  🔌\n"
-        f"      <i>вхід у ваш акаунт, щоб писати від вашого імені</i>\n\n"
-        f"{_mark(targets_count > 0)}  <b>② Обрати чати</b>  🎯\n"
-        f"      <i>куди й що надсилати</i>\n\n"
-        f"{_mark(paid)}  <b>③ Оплатити доступ</b>  💳\n"
-        f"      <i>потрібен, щоб розсилка працювала</i>\n\n"
-        f"{_mark(active)}  <b>④ Увімкнути</b>  ▶️\n"
-        f"      <i>і бот реагуватиме на тривогу сам</i>"
-    )
-    quick = section("Як почати", quick_body)
-
-    # ── Стан ──
-    state_lines = [
-        f"Режим:    {status_badge(active)}",
-        f"Чатів:    <b>{targets_count}</b>",
-        f"Доступ:   <b>{access_status_line(data.get('access_until'))}</b>",
-    ]
-    state_block = section("Ваш поточний стан", "\n".join(state_lines))
-
-    hint = _next_step_hint(connected, targets_count, paid, active)
-
-    text = f"{header}\n{intro}\n\n{quick}\n\n{state_block}\n\n{hint}"
     await msg.answer(text, reply_markup=main_menu_kb(user))
 
 
@@ -160,9 +152,6 @@ async def cmd_start(
 @router.message(F.text == BTN_HELP)
 async def cmd_help(msg: types.Message, state: FSMContext) -> None:
     await state.clear()
-    from ...config import PROJECT_ROOT
-    instruction_path = PROJECT_ROOT / "ІНСТРУКЦІЯ.html"
-
     # Короткий FAQ — щоб користувач отримав відповіді одразу в чаті
     faq = card(
         title="Швидка довідка",
@@ -201,18 +190,7 @@ async def cmd_help(msg: types.Message, state: FSMContext) -> None:
         ],
     )
 
-    if instruction_path.is_file():
-        doc = types.FSInputFile(str(instruction_path), filename="Plus_Sender_Інструкція.html")
-        await msg.answer(faq, reply_markup=main_menu_kb(msg.from_user))
-        await msg.answer_document(
-            doc,
-            caption=(
-                f"📖  <b>Повна інструкція в HTML</b>\n"
-                f"<i>Збережіть і відкрийте у браузері — там є все від А до Я зі скріншотами.</i>"
-            ),
-        )
-    else:
-        await msg.answer(faq, reply_markup=main_menu_kb(msg.from_user))
+    await msg.answer(faq, reply_markup=main_menu_kb(msg.from_user))
 
 
 @router.message(Command("cancel"))

@@ -1,305 +1,81 @@
-"""Профіль користувача та статус."""
+"""Профіль: коротко — чи працює бот і чому ні.
+
+Деталі (що саме йде в кожен чат) — на екрані «🎛 Налаштування»,
+тут лише зведення, щоб профіль відкривався миттєво і без Telegram-запитів.
+"""
 from __future__ import annotations
 
-import logging
-import os
-from datetime import datetime
-
 from aiogram import F, Router, types
-from telethon import TelegramClient
-from telethon import utils as tl_utils
-from telethon.tl.types import DocumentAttributeVideo
 
-from ...config import BTN_PROFILE, EMO, HR
+from ...config import BTN_BROADCAST, BTN_CONNECT, BTN_PAYMENT, BTN_PROFILE, BTN_TURN_ON, HR
 from ...storage import (
-    delay_for_target,
+    access_days_left,
+    get_access_until,
     get_schedule,
-    get_target_forward_source,
-    get_target_messages,
-    get_target_type,
     get_targets,
-    get_targets_meta,
+    has_session,
     load_user,
-    session_file_path,
-    session_path_for_id,
-    message_for_target,
 )
-from ...utils import (
-    access_status_line,
-    card,
-    default_delay_seconds,
-    default_message_text,
-    h,
-    next_hint,
-    preview_message,
-    section,
-    status_badge,
-)
+from ...utils import h, next_hint, truncate
 from ..keyboards import main_menu_kb
+from .broadcast import _is_unset, _target_title
 
-log = logging.getLogger(__name__)
 router = Router(name="profile")
 
 
-# ─────────────────────── Підрахунок кружків через Telethon ───────────────────────
-
-def _is_video_note(msg) -> bool:
-    doc = getattr(getattr(msg, "media", None), "document", None)
-    if not doc:
-        return False
-    for attr in getattr(doc, "attributes", []):
-        if isinstance(attr, DocumentAttributeVideo) and getattr(attr, "round_message", False):
-            return True
-    return False
-
-
-async def _count_video_notes(data: dict, user_id: int) -> dict[int, int]:
-    """Підключається до Telethon і рахує кружки в кожному чаті-джерелі.
-    Повертає {chat_id: count}. При помилці — пустий dict."""
-    api_id = data.get("api_id")
-    api_hash = data.get("api_hash")
-    if not (api_id and api_hash):
-        return {}
-
-    # Збираємо всі унікальні chat_id з усіх чатів/режимів
-    targets = get_targets(data)
-    source_ids: set[int] = set()
-    for pid in targets:
-        for mode in ("alert", "clear"):
-            if get_target_type(data, pid, mode) == "forward":
-                src = get_target_forward_source(data, pid, mode)
-                if src:
-                    source_ids.add(int(src["chat_id"]))
-
-    if not source_ids:
-        return {}
-
-    client = TelegramClient(session_path_for_id(user_id), int(api_id), str(api_hash))
-    counts: dict[int, int] = {}
-    try:
-        await client.connect()
-        if not await client.is_user_authorized():
-            return {}
-
-        for chat_id in source_ids:
-            try:
-                try:
-                    real_id, peer_cls = tl_utils.resolve_id(chat_id)
-                    entity = await client.get_input_entity(peer_cls(real_id))
-                except (ValueError, KeyError):
-                    entity = await client.get_entity(chat_id)
-
-                cnt = 0
-                async for msg in client.iter_messages(entity, limit=200):
-                    if _is_video_note(msg):
-                        cnt += 1
-                counts[chat_id] = cnt
-                log.debug("profile: chat_id=%d → %d кружків", chat_id, cnt)
-            except Exception as exc:
-                log.debug("profile: не вдалося рахувати chat_id=%d: %s", chat_id, exc)
-                counts[chat_id] = -1   # -1 = помилка
-
-    except Exception as exc:
-        log.debug("profile: Telethon помилка: %s", exc)
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-
-    return counts
+def _access_line(data: dict) -> str:
+    until = get_access_until(data)
+    left = access_days_left(data)
+    if left is not None:
+        tail = "сьогодні останній день" if left == 0 else f"ще {left} дн."
+        return f"✅ до {until:%d.%m.%Y} ({tail})"
+    if until:
+        return f"❌ закінчився {until:%d.%m.%Y}"
+    return "❌ немає"
 
 
-# ─────────────────────── Рядок одного режиму ───────────────────────
-
-def _mode_line(data: dict, pid: int, mode: str,
-               fwd_counts: dict[int, int],
-               branch: str = "├") -> str:
-    """Повертає рядок опису налаштування одного режиму (тривога або відбій)."""
-    t = get_target_type(data, pid, mode)
-    delay = delay_for_target(data, pid, mode)
-    icon = "🚨" if mode == "alert" else "🟢"
-
-    if t == "none":
-        return f"  {branch} {icon} 🚫 не надсилати"
-
-    if t == "forward":
-        src = get_target_forward_source(data, pid, mode)
-        src_name = h(src["title"]) if src else "?"
-        count_str = ""
-        if src:
-            cid = int(src["chat_id"])
-            if cid in fwd_counts:
-                n = fwd_counts[cid]
-                count_str = f"  · <b>{n} кружків</b>" if n >= 0 else "  · <i>недоступно</i>"
-        return f"  {branch} {icon} 📦 <b>{src_name}</b>{count_str}  · {delay}с"
-
-    if t == "text":
-        tms = get_target_messages(data).get(pid) or {}
-        raw = tms.get(mode)
-        if raw:
-            preview = h(preview_message(str(raw), 28))
-            return f"  {branch} {icon} ✍️ <code>{preview}</code>  · {delay}с"
-        return f"  {branch} {icon} ✍️ 📎 медіа  · {delay}с"
-
-    # None/default — глобальний дефолт
-    txt = h(preview_message(message_for_target(data, pid, mode), 28))
-    return f"  {branch} {icon} ↩️ <code>{txt}</code>  · {delay}с"
-
-
-# ─────────────────────── Секція чатів ───────────────────────
-
-def _chats_section(data: dict, fwd_counts: dict[int, int], max_items: int = 8) -> str:
+def _chats_line(data: dict) -> str:
     targets = get_targets(data)
     if not targets:
-        return "<i>не обрано — натисніть «🎯 Обрати чати»</i>"
+        return "не обрано"
+    names = []
+    for pid in targets:
+        unset = any(_is_unset(data, pid, m) for m in ("alert", "clear"))
+        names.append(h(truncate(_target_title(data, pid), 24)) + (" ⚠️" if unset else ""))
+    return f"({len(targets)}) " + ", ".join(names)
 
-    meta = get_targets_meta(data)
-    lines: list[str] = []
-
-    for pid in targets[:max_items]:
-        item = meta.get(pid, {}) or {}
-        title = h(str(item.get("title") or "—"))
-        uname = item.get("username")
-        upart = f" @{h(uname)}" if uname else ""
-        alert_line = _mode_line(data, pid, "alert", fwd_counts, branch="├")
-        clear_line  = _mode_line(data, pid, "clear", fwd_counts, branch="└")
-        lines.append(f"<b>{title}</b>{upart}\n{alert_line}\n{clear_line}")
-
-    if len(targets) > max_items:
-        lines.append(f"<i>…ще {len(targets) - max_items} чатів</i>")
-
-    return "\n\n".join(lines)
-
-
-# ─────────────────────── Хендлер профілю ───────────────────────
 
 @router.message(F.text == BTN_PROFILE)
 async def show_profile(msg: types.Message) -> None:
     user = msg.from_user
-    sess_file = session_file_path(user)
-    sess_exists = os.path.isfile(sess_file)
-
     data = load_user(user)
-    active = bool(data.get("status", False))
-    api_id = data.get("api_id")
-    api_hash = data.get("api_hash")
-
-    # Підраховуємо кружки через Telethon (тільки якщо є сесія і є forward-джерела)
-    fwd_counts: dict[int, int] = {}
-    if sess_exists and api_id and api_hash:
-        fwd_counts = await _count_video_notes(data, user.id)
-
-    alert_default = h(preview_message(default_message_text(data, "alert"), 80))
-    clear_default = h(preview_message(default_message_text(data, "clear"), 80))
-    alert_delay = default_delay_seconds(data, "alert")
-    clear_delay = default_delay_seconds(data, "clear")
-
-    # ── Акаунт ──
-    user_display = f"@{h(user.username)}" if user.username else f"ID {user.id}"
-    access_line = access_status_line(data.get("access_until"))
-    account_body = (
-        f"Користувач:  <b>{user_display}</b>  (<code>{user.id}</code>)\n"
-        f"Режим:       {status_badge(active)}\n"
-        f"Доступ:      <b>{access_line}</b>"
-    )
-
-    # ── Сесія Telethon ──
-    if sess_exists:
-        try:
-            mtime = datetime.fromtimestamp(os.path.getmtime(sess_file))
-            sess_line = f"✅ <b>підключено</b>  <i>({mtime:%d.%m.%Y %H:%M})</i>"
-        except OSError:
-            sess_line = "✅ <b>підключено</b>"
-    else:
-        sess_line = "⚠️ <i>не підключено — натисніть «🔌 Підключити»</i>"
-
-    cred_parts: list[str] = []
-    if api_id:
-        cred_parts.append(f"api_id <code>{api_id}</code>")
-    if api_hash and isinstance(api_hash, str):
-        cred_parts.append(f"api_hash <code>{h(api_hash[:6])}…</code>")
-    cred_line = "  ·  ".join(cred_parts) if cred_parts else "<i>ключі не збережено</i>"
-
-    session_body = (
-        f"Стан:    {sess_line}\n"
-        f"Ключі:   {cred_line}"
-    )
-
-    # ── Розсилка — статистика ──
+    connected = has_session(user)
     targets = get_targets(data)
-    n_targets = len(targets)
-    if n_targets == 0:
-        chats_label = "не обрано"
-    elif n_targets == 1:
-        chats_label = "1 чат"
-    elif 2 <= n_targets <= 4:
-        chats_label = f"{n_targets} чати"
-    else:
-        chats_label = f"{n_targets} чатів"
-
-    fwd_a = sum(1 for p in targets if get_target_type(data, p, "alert") == "forward")
-    fwd_c = sum(1 for p in targets if get_target_type(data, p, "clear") == "forward")
-    txt_a = sum(1 for p in targets if get_target_type(data, p, "alert") == "text")
-    txt_c = sum(1 for p in targets if get_target_type(data, p, "clear") == "text")
-
-    def _stat(fwd: int, txt: int, total: int) -> str:
-        parts = []
-        if fwd:
-            parts.append(f"📦 {fwd}")
-        if txt:
-            parts.append(f"✍️ {txt}")
-        def_cnt = total - fwd - txt
-        if def_cnt > 0:
-            parts.append(f"↩️ {def_cnt}")
-        return "  ".join(parts) if parts else "↩️ дефолт"
-
-    # Час роботи — окрема секція
+    active = bool(data.get("status"))
+    paid = access_days_left(data) is not None
     sched = get_schedule(data)
-    if sched["enabled"]:
-        night = "  <i>(нічний діапазон)</i>" if sched["from_time"] > sched["to_time"] else ""
-        schedule_body = (
-            f"🟢  <b>Увімкнено</b>\n"
-            f"Бот працює:  <b>{sched['from_time']} — {sched['to_time']}</b>{night}\n"
-            f"<i>Поза цим часом тривога/відбій пропускаються.</i>"
-        )
-    else:
-        schedule_body = (
-            f"🔴  <b>Вимкнено</b>\n"
-            f"Бот працює <b>цілодобово</b>."
-        )
+    hours = f"з {sched['from_time']} до {sched['to_time']}" if sched["enabled"] else "цілодобово"
 
-    settings_body = (
-        f"Обрано чатів:  <b>{chats_label}</b>\n"
-        f"🚨 Тривога:    {_stat(fwd_a, txt_a, n_targets)}\n"
-        f"🟢 Відбій:     {_stat(fwd_c, txt_c, n_targets)}"
+    text = (
+        f"👤  <b>Профіль</b>\n{HR}\n\n"
+        f"{'🟢 Бот увімкнений' if active else '⏸ Бот вимкнений'}\n"
+        f"📅 Доступ: {_access_line(data)}\n"
+        f"📱 Telegram: {'✅ підключено' if connected else '❌ не підключено'}\n"
+        f"💬 Чати: {_chats_line(data)}\n"
+        f"⏰ Працює: {hours}"
     )
 
-    # ── Детально по чатах ──
-    chats_detail = _chats_section(data, fwd_counts)
-
-    text = card(
-        title="Ваш профіль",
-        emoji=EMO["user"],
-        sections=[
-            ("Акаунт", account_body),
-            ("Сесія Telegram", session_body),
-            ("Налаштування розсилки", settings_body),
-            ("⏰ Час роботи", schedule_body),
-            ("Що саме надсилається у кожен чат", chats_detail),
-        ],
-    )
-
-    # ── Динамічна підказка наступної дії ──
-    if not sess_exists:
-        hint = next_hint("підключіть свій Telegram через «🔌 Підключити».")
-    elif n_targets == 0:
+    if not connected:
+        hint = next_hint(f"підключіть Telegram через «{BTN_CONNECT}».")
+    elif not targets:
         hint = next_hint("оберіть чати через «🎯 Обрати чати».")
+    elif any(_is_unset(data, pid, m) for pid in targets for m in ("alert", "clear")):
+        hint = next_hint(f"у чатах з ⚠️ не обрано, що надсилати — «{BTN_BROADCAST}».")
+    elif not paid:
+        hint = next_hint(f"продовжте доступ у «{BTN_PAYMENT}».")
     elif not active:
-        hint = next_hint("натисніть «▶️ Увімкнути» — і бот почне реагувати на тривогу.")
+        hint = next_hint(f"натисніть «{BTN_TURN_ON}».")
     else:
-        hint = (
-            f"{EMO['star']}  <i>Все налаштовано — бот уже стежить за тривогою.</i>"
-        )
+        hint = f"<i>Все працює. Що саме надсилається — у «{BTN_BROADCAST}».</i>"
 
     await msg.answer(f"{text}\n\n{hint}", reply_markup=main_menu_kb(user))
